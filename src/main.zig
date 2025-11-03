@@ -38,12 +38,19 @@ pub fn main() !void {
 }
 
 const Part = union(enum) {
-	literal: []u8,
+	literal: struct {
+		text: []u8,
+		pos: u64
+	},
 	ref: struct {
 		name: []u8,
-		judge: ?*Part
+		judge: ?*Part,
+		pos: u64
 	},
-	compref: *Buffer(Part)
+	compref: struct {
+		ref: *Buffer(Part),
+		pos: u64
+	}
 };
 
 const Bind = struct {
@@ -145,9 +152,12 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 			const comp = try parse_comp_ref(mem, i, text, err);
 			std.debug.assert(text[i.*] == ')');
 			const part = Part{
-				.compref = mem.create(Buffer(Part)) catch unreachable
+				.compref = .{
+					.ref=mem.create(Buffer(Part)) catch unreachable,
+					.pos = i.*
+				}
 			};
-			part.compref.* = comp;
+			part.compref.ref.* = comp;
 			current_alt.append(part)
 				catch unreachable;
 			continue;
@@ -161,7 +171,10 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 				}
 			}
 			const part = Part{
-				.literal=text[i.*+1..end]
+				.literal=.{
+					.pos = i.*,
+					.text=text[i.*+1..end]
+				}
 			};
 			i.* = end;
 			current_alt.append(part)
@@ -178,7 +191,8 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 		var part = Part{
 			.ref=.{
 				.name=text[i.*..end],
-				.judge=null
+				.judge=null,
+				.pos = i.*
 			}
 		};
 		c = text[end];
@@ -189,9 +203,12 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 				const comp = try parse_comp_ref(mem, &end, text, err);
 				std.debug.assert(text[end] == ')');
 				const judge = Part{
-					.compref = mem.create(Buffer(Part)) catch unreachable
+					.compref = .{
+						.ref=mem.create(Buffer(Part)) catch unreachable,
+						.pos = i.*
+					}
 				};
-				judge.compref.* = comp;
+				judge.compref.ref.* = comp;
 				part.ref.judge = mem.create(Part)
 					catch unreachable;
 				part.ref.judge.?.* = judge;
@@ -208,7 +225,8 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 			const judge = Part{
 				.ref = .{
 					.name=text[i.*..end],
-					.judge=null
+					.judge=null,
+					.pos=i.*
 				}
 			};
 			part.ref.judge = mem.create(Part)
@@ -248,9 +266,12 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 			const comp = try parse_comp_ref(mem, i, text, err);
 			std.debug.assert(text[i.*] == ')');
 			const part = Part{
-				.compref = mem.create(Buffer(Part)) catch unreachable
+				.compref = .{
+					.pos = i.*,
+					.ref=mem.create(Buffer(Part)) catch unreachable
+				}
 			};
-			part.compref.* = comp;
+			part.compref.ref.* = comp;
 			current_alt.append(part)
 				catch unreachable;
 			continue;
@@ -264,7 +285,10 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 				}
 			}
 			const part = Part{
-				.literal=text[i.*+1..end]
+				.literal=.{
+					.text=text[i.*+1..end],
+					.pos = i.*
+				}
 			};
 			i.* = end;
 			current_alt.append(part)
@@ -281,7 +305,8 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 		var part = Part{
 			.ref=.{
 				.name=text[i.*..end],
-				.judge=null
+				.judge=null,
+				.pos = i.*
 			}
 		};
 		c = text[end];
@@ -292,9 +317,12 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 				const comp = try parse_comp_ref(mem, &end, text, err);
 				std.debug.assert(text[end] == ')');
 				const judge = Part{
-					.compref = mem.create(Buffer(Part)) catch unreachable
+					.compref = .{
+						.pos=i.*,
+						.ref=mem.create(Buffer(Part)) catch unreachable
+					}
 				};
-				judge.compref.* = comp;
+				judge.compref.ref.* = comp;
 				part.ref.judge = mem.create(Part)
 					catch unreachable;
 				part.ref.judge.?.* = judge;
@@ -311,7 +339,8 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 			const judge = Part{
 				.ref = .{
 					.name=text[i.*..end],
-					.judge = null
+					.judge = null,
+					.pos = i.*
 				}
 			};
 			part.ref.judge = mem.create(Part)
@@ -352,9 +381,12 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 			const comp = try parse_comp_ref(mem, i, text, err);
 			std.debug.assert(text[i.*] == ')');
 			const part = Part{
-				.compref = mem.create(Buffer(Part)) catch unreachable
+				.compref = .{
+					.pos=i.*,
+					.ref=mem.create(Buffer(Part)) catch unreachable
+				}
 			};
-			part.compref.* = comp;
+			part.compref.ref.* = comp;
 			current_alt.append(part)
 				catch unreachable;
 			continue;
@@ -368,7 +400,10 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 				}
 			}
 			const part = Part{
-				.literal=text[i.*+1..end]
+				.literal=.{
+					.text=text[i.*+1..end],
+					.pos = i.*
+				}
 			};
 			i.* = end;
 			current_alt.append(part)
@@ -385,7 +420,8 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 		var part = Part{
 			.ref=.{
 				.name=text[i.*..end],
-				.judge=null
+				.judge=null,
+				.pos = i.*
 			}
 		};
 		c = text[end];
@@ -396,9 +432,12 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 				const comp = try parse_comp_ref(mem, &end, text, err);
 				std.debug.assert(text[end] == ')');
 				const judge = Part{
-					.compref = mem.create(Buffer(Part)) catch unreachable
+					.compref = .{
+						.pos = i.*,
+						.ref=mem.create(Buffer(Part)) catch unreachable
+					}
 				};
-				judge.compref.* = comp;
+				judge.compref.ref.* = comp;
 				part.ref.judge = mem.create(Part)
 					catch unreachable;
 				part.ref.judge.?.* = judge;
@@ -415,7 +454,8 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 			const judge = Part{
 				.ref = .{
 					.name=text[i.*..end],
-					.judge=null
+					.judge=null,
+					.pos = i.*
 				}
 			};
 			part.ref.judge = mem.create(Part)
@@ -462,7 +502,7 @@ pub fn show_bind(bind: Bind) void {
 pub fn show_part(part: Part) void {
 	switch (part){
 		.literal => {
-			std.debug.print("\"{s}\" ", .{part.literal});
+			std.debug.print("\"{s}\" ", .{part.literal.text});
 		},
 		.ref => {
 			std.debug.print("{s} ", .{part.ref.name});
@@ -472,7 +512,7 @@ pub fn show_part(part: Part) void {
 		},
 		.compref => {
 			std.debug.print("( ", .{});
-			for (part.compref.items) |sub| {
+			for (part.compref.ref.items) |sub| {
 				show_part(sub);
 			}
 			std.debug.print(") ", .{});
