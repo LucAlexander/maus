@@ -45,22 +45,24 @@ const Part = union(enum) {
 	ref: struct {
 		name: []u8,
 		judge: ?*Part,
-		pos: u64
+		pos: u64,
+		link: ?*Bind
 	},
 	compref: struct {
 		ref: *Buffer(Part),
-		pos: u64
+		pos: u64,
+		link: ?*Bind
 	}
 };
 
 const Bind = struct {
-	left: Buffer(Part),
+	left: Buffer(Buffer(Part)),
 	subbinds: ?*Program,
 	right: Buffer(Buffer(Part)),
 
 	pub fn init(mem: *const std.mem.Allocator) Bind {
 		return Bind {
-			.left = Buffer(Part).init(mem.*),
+			.left = Buffer(Buffer(Part)).init(mem.*),
 			.subbinds = null,
 			.right = Buffer(Buffer(Part)).init(mem.*)
 		};
@@ -98,7 +100,7 @@ pub fn parse(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) Pro
 	return program;
 }
 
-pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buffer(Part), err: *Buffer(Error)) ParseError!Bind {
+pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buffer(Buffer(Part)), err: *Buffer(Error)) ParseError!Bind {
 	var current_alt = Buffer(Part).init(mem.*);
 	var current_bind = Bind.init(mem);
 	current_bind.left = left;
@@ -112,26 +114,22 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 			c = text[i.*];
 		}
 		if (c == '='){
-			if (current_bind.right.items.len != 0){
-				err.append(set_error(mem, i.*, "Expected alternate for equation right hand side, found =\n", .{}))
-					catch unreachable;
-				return ParseError.UnexpectedToken;
-			}
 			if (current_alt.items.len == 0){
 				err.append(set_error(mem, i.*, "Expected right hand side for equation, found =\n", .{}))
 					catch unreachable;
 				return ParseError.UnexpectedToken;
 			}
 			i.* += 1;
-			var nested_bind = Bind.init(mem);
-			nested_bind.left = current_alt;
+			current_bind.right.append(current_alt)
+				catch unreachable;
 			if (current_bind.subbinds == null){
 				current_bind.subbinds = mem.create(Buffer(Bind))
 					catch unreachable;
 				current_bind.subbinds.?.* = Buffer(Bind).init(mem.*);
 			}
-			current_bind.subbinds.?.append(try parse_right(mem, i, text, current_alt, err))
+			current_bind.subbinds.?.append(try parse_right(mem, i, text, current_bind.right, err))
 				catch unreachable;
+			current_bind.right = Buffer(Buffer(Part)).init(mem.*);
 			current_alt = Buffer(Part).init(mem.*);
 			continue;
 		}
@@ -154,7 +152,8 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 			const part = Part{
 				.compref = .{
 					.ref=mem.create(Buffer(Part)) catch unreachable,
-					.pos = i.*
+					.pos = i.*,
+					.link=null
 				}
 			};
 			part.compref.ref.* = comp;
@@ -192,7 +191,8 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 			.ref=.{
 				.name=text[i.*..end],
 				.judge=null,
-				.pos = i.*
+				.pos = i.*,
+				.link=null
 			}
 		};
 		c = text[end];
@@ -205,7 +205,8 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 				const judge = Part{
 					.compref = .{
 						.ref=mem.create(Buffer(Part)) catch unreachable,
-						.pos = i.*
+						.pos = i.*,
+						.link=null
 					}
 				};
 				judge.compref.ref.* = comp;
@@ -226,7 +227,8 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 				.ref = .{
 					.name=text[i.*..end],
 					.judge=null,
-					.pos=i.*
+					.pos=i.*,
+					.link=null
 				}
 			};
 			part.ref.judge = mem.create(Part)
@@ -268,7 +270,8 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 			const part = Part{
 				.compref = .{
 					.pos = i.*,
-					.ref=mem.create(Buffer(Part)) catch unreachable
+					.ref=mem.create(Buffer(Part)) catch unreachable,
+					.link=null
 				}
 			};
 			part.compref.ref.* = comp;
@@ -306,7 +309,8 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 			.ref=.{
 				.name=text[i.*..end],
 				.judge=null,
-				.pos = i.*
+				.pos = i.*,
+				.link=null
 			}
 		};
 		c = text[end];
@@ -319,7 +323,8 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 				const judge = Part{
 					.compref = .{
 						.pos=i.*,
-						.ref=mem.create(Buffer(Part)) catch unreachable
+						.ref=mem.create(Buffer(Part)) catch unreachable,
+						.link=null
 					}
 				};
 				judge.compref.ref.* = comp;
@@ -340,7 +345,8 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 				.ref = .{
 					.name=text[i.*..end],
 					.judge = null,
-					.pos = i.*
+					.pos = i.*,
+					.link=null
 				}
 			};
 			part.ref.judge = mem.create(Part)
@@ -356,8 +362,9 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 	return ParseError.UnexpectedEOF;
 }
 
-pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error)) ParseError!Buffer(Part) {
+pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error)) ParseError!Buffer(Buffer(Part)) {
 	var current_alt = Buffer(Part).init(mem.*);
+	var current_side = Buffer(Buffer(Part)).init(mem.*);
 	outer: while (i.* < text.len) : (i.* += 1){
 		var c = text[i.*];
 		while (c == ' ' or c == '\n' or c == '\t'){
@@ -374,7 +381,15 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 				return ParseError.UnexpectedToken;
 			}
 			i.* += 1;
-			return current_alt;
+			current_side.append(current_alt)
+				catch unreachable;
+			return current_side;
+		}
+		else if (c == '|'){
+			current_side.append(current_alt)
+				catch unreachable;
+			current_alt = Buffer(Part).init(mem.*);
+			continue;
 		}
 		else if (c == '('){
 			i.* += 1;
@@ -383,7 +398,8 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 			const part = Part{
 				.compref = .{
 					.pos=i.*,
-					.ref=mem.create(Buffer(Part)) catch unreachable
+					.ref=mem.create(Buffer(Part)) catch unreachable,
+					.link=null
 				}
 			};
 			part.compref.ref.* = comp;
@@ -413,7 +429,7 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 		var end = i.* + 1;
 		while (end < text.len) : (end += 1){
 			c = text[end];
-			if (c == ' ' or c == '\n' or c == '\t' or c == '=' or c == ':'){
+			if (c == ' ' or c == '\n' or c == '\t' or c == '=' or c == ':' or c == '|'){
 				break;
 			}
 		}
@@ -421,7 +437,8 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 			.ref=.{
 				.name=text[i.*..end],
 				.judge=null,
-				.pos = i.*
+				.pos = i.*,
+				.link=null
 			}
 		};
 		c = text[end];
@@ -434,7 +451,8 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 				const judge = Part{
 					.compref = .{
 						.pos = i.*,
-						.ref=mem.create(Buffer(Part)) catch unreachable
+						.ref=mem.create(Buffer(Part)) catch unreachable,
+						.link=null
 					}
 				};
 				judge.compref.ref.* = comp;
@@ -447,7 +465,7 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 			i.* = end;
 			while (end < text.len) : (end += 1){
 				c = text[end];
-				if (c == ' ' or c == '\n' or c == '\t' or c == '='){
+				if (c == ' ' or c == '\n' or c == '\t' or c == '=' or c == '|'){
 					break;
 				}
 			}
@@ -455,7 +473,8 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 				.ref = .{
 					.name=text[i.*..end],
 					.judge=null,
-					.pos = i.*
+					.pos = i.*,
+					.link=null
 				}
 			};
 			part.ref.judge = mem.create(Part)
@@ -478,8 +497,13 @@ pub fn show_program(program: Buffer(Bind)) void {
 }
 
 pub fn show_bind(bind: Bind) void {
-	for (bind.left.items) |p| {
-		show_part(p);
+	for (bind.left.items, 0..) |list, i| {
+		if (i != 0){
+			std.debug.print("| ", .{});
+		}
+		for (list.items) |p| {
+			show_part(p);
+		}
 	}
 	std.debug.print("= ", .{});
 	if (bind.subbinds) |subs| {
@@ -507,6 +531,7 @@ pub fn show_part(part: Part) void {
 		.ref => {
 			std.debug.print("{s} ", .{part.ref.name});
 			if (part.ref.judge) |judge| {
+				std.debug.print(": ", .{});
 				show_part(judge.*);
 			}
 		},
@@ -584,3 +609,11 @@ pub fn show_error(text: []u8, err: Error) void {
 	stderr.print("\n", .{})
 		catch unreachable;
 }
+
+const LinkError = error {
+	ConstructNotFound
+};
+
+const VAST = struct {
+	program: Buffer(Bind)
+};
