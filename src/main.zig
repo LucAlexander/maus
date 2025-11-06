@@ -253,7 +253,8 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 				i.* += 1;
 				const right = try parse_comp_ref(mem, i, text, err);
 				if (text[i.*] == '='){
-					//TODO error
+					err.append(set_error(mem, i.*, "Encountered = in right of nested binding\n", .{}))
+						catch unreachable;
 					return ParseError.UnexpectedToken;
 				}
 				const part = Part{
@@ -305,7 +306,7 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 		var end = i.* + 1;
 		while (end < text.len) : (end += 1){
 			c = text[end];
-			if (c == ' ' or c == '\n' or c == '\t' or c == ')'){
+			if (c == ' ' or c == '\n' or c == '\t' or c == ')' or c=='='){
 				break;
 			}
 		}
