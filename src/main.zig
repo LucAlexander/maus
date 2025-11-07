@@ -55,13 +55,11 @@ const Part = union(enum) {
 	ref: struct {
 		name: []u8,
 		pos: u64,
-		link: ?*Bind
 	},
 	compref: struct {
 		ref: *Buffer(Part),
 		right: ?*Buffer(Part),
 		pos: u64,
-		link: ?*Bind
 	}
 };
 
@@ -69,12 +67,14 @@ const Bind = struct {
 	left: Buffer(Buffer(Part)),
 	subbinds: ?*Program,
 	right: ?Buffer(Buffer(Part)),
+	node: ?*Node,
 
 	pub fn init(mem: *const std.mem.Allocator) Bind {
 		return Bind {
 			.left = Buffer(Buffer(Part)).init(mem.*),
 			.subbinds = null,
-			.right = null
+			.right = null,
+			.node = null
 		};
 	}
 };
@@ -161,7 +161,6 @@ pub fn parse_unbind(mem: *const std.mem.Allocator, i:*u64, text: []u8, err: *Buf
 						.ref=mem.create(Buffer(Part)) catch unreachable,
 						.right = mem.create(Buffer(Part)) catch unreachable,
 						.pos = i.*,
-						.link=null
 					}
 				};
 				part.compref.ref.* = comp;
@@ -175,7 +174,6 @@ pub fn parse_unbind(mem: *const std.mem.Allocator, i:*u64, text: []u8, err: *Buf
 					.ref=mem.create(Buffer(Part)) catch unreachable,
 					.right=null,
 					.pos = i.*,
-					.link=null
 				}
 			};
 			part.compref.ref.* = comp;
@@ -213,7 +211,6 @@ pub fn parse_unbind(mem: *const std.mem.Allocator, i:*u64, text: []u8, err: *Buf
 			.ref=.{
 				.name=text[i.*..end],
 				.pos = i.*,
-				.link=null
 			}
 		};
 		i.* = end-1;
@@ -303,7 +300,6 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 						.ref=mem.create(Buffer(Part)) catch unreachable,
 						.right = mem.create(Buffer(Part)) catch unreachable,
 						.pos = i.*,
-						.link=null
 					}
 				};
 				part.compref.ref.* = comp;
@@ -317,7 +313,6 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 					.ref=mem.create(Buffer(Part)) catch unreachable,
 					.right=null,
 					.pos = i.*,
-					.link=null
 				}
 			};
 			part.compref.ref.* = comp;
@@ -355,7 +350,6 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 			.ref=.{
 				.name=text[i.*..end],
 				.pos = i.*,
-				.link=null
 			}
 		};
 		i.* = end-1;
@@ -403,7 +397,6 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 						.ref=mem.create(Buffer(Part)) catch unreachable,
 						.right = mem.create(Buffer(Part)) catch unreachable,
 						.pos = i.*,
-						.link=null
 					}
 				};
 				part.compref.ref.* = comp;
@@ -417,7 +410,6 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 					.pos = i.*,
 					.ref=mem.create(Buffer(Part)) catch unreachable,
 					.right=null,
-					.link=null
 				}
 			};
 			part.compref.ref.* = comp;
@@ -455,7 +447,6 @@ pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *
 			.ref=.{
 				.name=text[i.*..end],
 				.pos = i.*,
-				.link=null
 			}
 		};
 		i.* = end-1;
@@ -513,7 +504,6 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 						.ref=mem.create(Buffer(Part)) catch unreachable,
 						.right = mem.create(Buffer(Part)) catch unreachable,
 						.pos = i.*,
-						.link=null
 					}
 				};
 				part.compref.ref.* = comp;
@@ -527,7 +517,6 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 					.pos=i.*,
 					.ref=mem.create(Buffer(Part)) catch unreachable,
 					.right=null,
-					.link=null
 				}
 			};
 			part.compref.ref.* = comp;
@@ -565,7 +554,6 @@ pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buff
 			.ref=.{
 				.name=text[i.*..end],
 				.pos = i.*,
-				.link=null
 			}
 		};
 		i.* = end-1;
@@ -787,6 +775,7 @@ pub fn create_node(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *
 			if (compare_side(node.name, bind.left)){
 				node.rules.append(bind)
 					catch unreachable;
+				bind.node = node;
 				return;
 			}
 		}
@@ -800,6 +789,7 @@ pub fn create_node(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *
 		catch unreachable;
 	vast.tree.append(node)
 		catch unreachable;
+	bind.node = &vast.tree.items[vast.tree.items.len-1];
 }
 
 pub fn add_binds(mem: *const std.mem.Allocator, vast: *VAST, subbinds: Buffer(Bind), err: *Buffer(Error)) LinkError!void {
@@ -810,6 +800,7 @@ pub fn add_binds(mem: *const std.mem.Allocator, vast: *VAST, subbinds: Buffer(Bi
 	for (old_len..vast.program.items.len) |i| {
 		create_node(mem, vast, &vast.program.items[i], err);
 	}
+	//TODO execution context
 }
 
 pub fn show_vast(vast: VAST) void {
