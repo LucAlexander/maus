@@ -35,6 +35,16 @@ pub fn main() !void {
 	else{
 		show_program(program);
 	}
+	var vast = VAST.init(&mem);
+	add_binds(&mem, &vast, program, &error_log) catch {
+		if (error_log.items.len != 0){
+			for (error_log.items) |err| {
+				show_error(contents, err);
+			}
+		}
+		return;
+	};
+	show_vast(vast);
 }
 
 const Part = union(enum) {
@@ -699,95 +709,134 @@ const LinkError = error {
 };
 
 const VAST = struct {
-	program: Buffer(Bind)
+	program: Buffer(Bind),
+	tree: Buffer(Node),
+	pub fn init(mem: *const std.mem.Allocator) VAST {
+		return VAST{
+			.program=Buffer(Bind).init(mem.*),
+			.tree=Buffer(Node).init(mem.*)
+		};
+	}
 };
-// 
-// pub fn compare_single_ref(program: *Buffer(Bind), part: *Part, bind: *Bind) bool {
-	// outer: for (bind.left.items) |left| {
-		// if (!std.mem.eql(u8, part.ref.name, left.items[0])){
-			// continue;
-		// }
-		// for (1..left.items.len) |i| {
-			// if (left.items[i] != .compref){
-				// continue :outer;
-			// }
-			// if (left.items[i].right == null) {
-				// continue :outer;
-			// }
-		// }
-		// return true;
-	// }
-	// return false;
-// }
-// 
-// pub fn compare_complicated_ref(program: *Buffer(Bind), side: *Buffer(Part), bind:*Bind) bool {
-	// //TODO
-// }
-// 
-// //TODO validity checks
-// pub fn link_part(program: *Buffer(Bind), part: *Part, err: Buffer(Error)) LinkError!void {
-	// switch (part.*){
-		// .literal => {
-			// return;
-		// },
-		// .ref => {
-			// for (program.items) |*bind| {
-				// if (compare_single_ref(program, part, bind)){
-					// part.ref.link = bind;
-					// return;
-				// }
-			// }
-		// },
-		// .compref => {
-			// if (part.compref.right) |right| {
-				// for (program.items) |*bind| {
-					// if (compare_ref_complicated(program, part.compref.right, bind)) {
-						// part.compref.link = bind;
-						// return;
-					// }
-				// }
-			// }
-			// else{
-				// for (program.items) |*bind| {
-					// if (compare_ref_compicated(program,part.compref.ref, bind)){
-						// part.compref.link = bind;
-						// return;
-					// }
-				// }
-			// }
-		// }
-	// }
-// }
-// 
-// pub fn link_side(program: *Buffer(Bind), side: *Buffer(Buffer(Part)), err: Buffer(Error)) LinkError!void {
-	// for (side.items) |*alt| {
-		// for (alt.items) |*part| {
-			// try link_part(program, part, err);
-		// }
-	// }
-// }
-// 
-// pub fn add_and_link_new_binds(vast: *VAST, subbinds: Buffer(Bind), err: Buffer(Error)) LinkError!void {
-	// //NOTE expects applied bind variables
-	// const old_len = vast.program.items.len;
-	// vast.program.appendSlice(subbinds.items)
-		// catch unreachable;
-	// for (old_len..vast.program.items.len) |i| {
-		// const inserted = &vast.program.items[i];
-		// if (inserted.right) |*right| {
-			// try link_side(&vast.program, &inserted.left, err);
-			// try link_side(&vast.program, right, err);
-	// }
-// }
-// 
-// pub fn create_and_link_vast(program: Buffer(Bind), err:Buffer(Error)) LinkError!VAST {
-	// var vast = VAST{
-		// .program = program
-	// };
-	// for (vast.program.items) |*bind| {
-		// if (bind.right)|*right|{
-			// try link_side(&vast.program, &bind.left, err);
-			// try link_side(&vast.program, right, err);
-		// }
-	// }
-// }
+
+const Node  = struct {
+	name: Buffer(Buffer(Part)),
+	rules: Buffer(*Bind),
+	structure: Buffer(*Node)
+};
+
+pub fn compare_part(left: Part, right: Part) bool {
+	switch (left){
+		.literal => {
+			if (right != .literal){
+				return false;
+			}
+			return std.mem.eql(u8, left.literal.text, right.literal.text);
+		},
+		.ref => {
+			if (right != .ref){
+				return false;
+			}
+			return std.mem.eql(u8, left.ref.name, right.ref.name);
+		},
+		.compref => {
+			if (right != .compref){
+				return false;
+			}
+			if (left.compref.right != null and right.compref.right == null){
+				return false;
+			}
+			if (left.compref.right == null and right.compref.right != null){
+				return false;
+			}
+			if (left.compref.right) |r| {
+				return compare_alt(left.compref.ref.*, right.compref.ref.*) and compare_alt(r.*, right.compref.right.?.*);
+			}
+			return compare_alt(left.compref.ref.*, right.compref.ref.*);
+		}
+	}
+}
+
+pub fn compare_alt(left: Buffer(Part), right: Buffer(Part)) bool {
+	if (left.items.len != right.items.len){
+		return false;
+	}
+	for (left.items, right.items) |l, r| {
+		if (compare_part(l, r) == false){
+			return false;
+		}
+	}
+	return true;
+}
+
+pub fn compare_side(left: Buffer(Buffer(Part)), right: Buffer(Buffer(Part))) bool {
+	if (left.items.len != right.items.len){
+		return false;
+	}
+	for (left.items, right.items) |l, r| {
+		if (compare_alt(l, r) == false){
+			return false;
+		}
+	}
+	return true;
+}
+
+pub fn create_node(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *Buffer(Error)) void {
+	if (bind.right) |_| {
+		for (vast.tree.items) |*node| {
+			if (compare_side(node.name, bind.left)){
+				node.rules.append(bind)
+					catch unreachable;
+				return;
+			}
+		}
+	}
+	var node = Node{
+		.name=bind.left,
+		.rules = Buffer(*Bind).init(mem.*),
+		.structure = Buffer(*Node).init(mem.*)
+	};
+	node.rules.append(bind)
+		catch unreachable;
+	vast.tree.append(node)
+		catch unreachable;
+}
+
+pub fn add_binds(mem: *const std.mem.Allocator, vast: *VAST, subbinds: Buffer(Bind), err: *Buffer(Error)) LinkError!void {
+	//NOTE expects applied bind variables
+	const old_len = vast.program.items.len;
+	vast.program.appendSlice(subbinds.items)
+		catch unreachable;
+	for (old_len..vast.program.items.len) |i| {
+		create_node(mem, vast, &vast.program.items[i], err);
+	}
+}
+
+pub fn show_vast(vast: VAST) void {
+	show_program(vast.program);
+	for (vast.tree.items) |node| {
+		show_node(node);
+	}
+}
+
+pub fn show_node(node: Node) void {
+	std.debug.print("Node [\n", .{});
+	std.debug.print("Name: ", .{});
+	for (node.name.items, 0..) |alt, i| {
+		if (i != 0){
+			std.debug.print("| ", .{});
+		}
+		for (alt.items) |part| {
+			show_part(part);
+		}
+	}
+	std.debug.print("\nRules:", .{});
+	for (node.rules.items) |rule| {
+		show_bind(rule.*);
+	}
+	std.debug.print("\nStructure: ", .{});
+	for (node.structure.items) |s| {
+		show_node(s.*);
+	}
+	std.debug.print("\n]\n\n", .{});
+}
