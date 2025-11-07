@@ -58,13 +58,13 @@ const Part = union(enum) {
 const Bind = struct {
 	left: Buffer(Buffer(Part)),
 	subbinds: ?*Program,
-	right: Buffer(Buffer(Part)),
+	right: ?Buffer(Buffer(Part)),
 
 	pub fn init(mem: *const std.mem.Allocator) Bind {
 		return Bind {
 			.left = Buffer(Buffer(Part)).init(mem.*),
 			.subbinds = null,
-			.right = Buffer(Buffer(Part)).init(mem.*)
+			.right = null
 		};
 	}
 };
@@ -88,6 +88,14 @@ pub fn parse(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) Pro
 			}
 			c = text[i];
 		}
+		if (text[i] == '/'){
+			const unbind = parse_unbind(mem, &i, text, err) catch {
+				continue;
+			};
+			program.append(unbind)
+				catch unreachable;
+			continue;
+		}
 		const left = parse_left(mem, &i, text, err) catch {
 			continue;
 		};
@@ -100,10 +108,118 @@ pub fn parse(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) Pro
 	return program;
 }
 
+pub fn parse_unbind(mem: *const std.mem.Allocator, i:*u64, text: []u8, err: *Buffer(Error)) ParseError!Bind {
+	var current_alt = Buffer(Part).init(mem.*);
+	var current_bind = Bind.init(mem);
+	std.debug.assert(text[i.*] == '/');
+	i.* += 1;
+	outer: while (i.* < text.len) : (i.* += 1){
+		var c = text[i.*];
+		while (c == ' ' or c == '\n' or c == '\t'){
+			i.* += 1;
+			if (i.* == text.len){
+				break :outer;
+			}
+			c = text[i.*];
+		}
+		if (c == ';'){
+			current_bind.left.append(current_alt)
+				catch unreachable;
+			i.* += 1;
+			return current_bind;
+		}
+		else if (c == '|'){
+			current_bind.left.append(current_alt)
+				catch unreachable;
+			current_alt = Buffer(Part).init(mem.*);
+			continue;
+		}
+		else if (c == '('){
+			i.* += 1;
+			const comp = try parse_comp_ref(mem, i, text, err);
+			std.debug.assert(text[i.*] == ')' or text[i.*] == '=');
+			if (text[i.*] == '='){
+				i.* += 1;
+				const right = try parse_comp_ref(mem, i, text, err);
+				if (text[i.*] == '='){
+					err.append(set_error(mem, i.*, "Encountered = in right of nested binding\n", .{}))
+						catch unreachable;
+					return ParseError.UnexpectedToken;
+				}
+				const part = Part{
+					.compref = .{
+						.ref=mem.create(Buffer(Part)) catch unreachable,
+						.right = mem.create(Buffer(Part)) catch unreachable,
+						.pos = i.*,
+						.link=null
+					}
+				};
+				part.compref.ref.* = comp;
+				part.compref.right.?.* = right;
+				current_alt.append(part)
+					catch unreachable;
+				continue;
+			}
+			const part = Part{
+				.compref = .{
+					.ref=mem.create(Buffer(Part)) catch unreachable,
+					.right=null,
+					.pos = i.*,
+					.link=null
+				}
+			};
+			part.compref.ref.* = comp;
+			current_alt.append(part)
+				catch unreachable;
+			continue;
+		}
+		else if (c == '"'){
+			var end = i.* + 1;
+			while (end < text.len) : (end += 1){
+				c = text[end];
+				if (c=='"'){
+					break;
+				}
+			}
+			const part = Part{
+				.literal=.{
+					.pos = i.*,
+					.text=text[i.*+1..end]
+				}
+			};
+			i.* = end;
+			current_alt.append(part)
+				catch unreachable;
+			continue;
+		}
+		var end = i.* + 1;
+		while (end < text.len) : (end += 1){
+			c = text[end];
+			if (c == ' ' or c == '\n' or c == '\t' or c == '|' or c == ';' or c == '='){
+				break;
+			}
+		}
+		const part = Part{
+			.ref=.{
+				.name=text[i.*..end],
+				.pos = i.*,
+				.link=null
+			}
+		};
+		i.* = end-1;
+		current_alt.append(part)
+			catch unreachable;
+	}
+	err.append(set_error(mem, i.*, "Encountered end of file while parsing unbind pattern\n", .{}))
+		catch unreachable;
+	return ParseError.UnexpectedEOF;
+}
+
 pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buffer(Buffer(Part)), err: *Buffer(Error)) ParseError!Bind {
 	var current_alt = Buffer(Part).init(mem.*);
 	var current_bind = Bind.init(mem);
 	current_bind.left = left;
+	current_bind.right = Buffer(Buffer(Part)).init(mem.*);
 	outer: while (i.* < text.len) : (i.* += 1){
 		var c = text[i.*];
 		while (c == ' ' or c == '\n' or c == '\t'){
@@ -120,27 +236,27 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 				return ParseError.UnexpectedToken;
 			}
 			i.* += 1;
-			current_bind.right.append(current_alt)
+			current_bind.right.?.append(current_alt)
 				catch unreachable;
 			if (current_bind.subbinds == null){
 				current_bind.subbinds = mem.create(Buffer(Bind))
 					catch unreachable;
 				current_bind.subbinds.?.* = Buffer(Bind).init(mem.*);
 			}
-			current_bind.subbinds.?.append(try parse_right(mem, i, text, current_bind.right, err))
+			current_bind.subbinds.?.append(try parse_right(mem, i, text, current_bind.right.?, err))
 				catch unreachable;
 			current_bind.right = Buffer(Buffer(Part)).init(mem.*);
 			current_alt = Buffer(Part).init(mem.*);
 			continue;
 		}
 		if (c == ';'){
-			current_bind.right.append(current_alt)
+			current_bind.right.?.append(current_alt)
 				catch unreachable;
 			i.* += 1;
 			return current_bind;
 		}
 		else if (c == '|'){
-			current_bind.right.append(current_alt)
+			current_bind.right.?.append(current_alt)
 				catch unreachable;
 			current_alt = Buffer(Part).init(mem.*);
 			continue;
@@ -443,6 +559,9 @@ pub fn show_program(program: Buffer(Bind)) void {
 }
 
 pub fn show_bind(bind: Bind) void {
+	if (bind.right == null){
+		std.debug.print("/ ", .{});
+	}
 	for (bind.left.items, 0..) |list, i| {
 		if (i != 0){
 			std.debug.print("| ", .{});
@@ -451,19 +570,21 @@ pub fn show_bind(bind: Bind) void {
 			show_part(p);
 		}
 	}
-	std.debug.print("= ", .{});
-	if (bind.subbinds) |subs| {
-		std.debug.print("\n", .{});
-		for (subs.items) |sub| {
-			show_bind(sub);
+	if (bind.right) |right| {
+		std.debug.print("= ", .{});
+		if (bind.subbinds) |subs| {
+			std.debug.print("\n", .{});
+			for (subs.items) |sub| {
+				show_bind(sub);
+			}
 		}
-	}
-	for (bind.right.items, 0..) |list, i| {
-		if (i != 0){
-			std.debug.print("| ", .{});
-		}
-		for (list.items) |p| {
-			show_part(p);
+		for (right.items, 0..) |list, i| {
+			if (i != 0){
+				std.debug.print("| ", .{});
+			}
+			for (list.items) |p| {
+				show_part(p);
+			}
 		}
 	}
 	std.debug.print(";\n", .{});
@@ -565,3 +686,90 @@ const LinkError = error {
 const VAST = struct {
 	program: Buffer(Bind)
 };
+
+// pub fn compare_single_ref(program: *Buffer(Bind), part: *Part, bind: *Bind) bool {
+	// outer: for (bind.left.items) |left| {
+		// if (!std.mem.eql(u8, part.ref.name, left.items[0])){
+			// continue;
+		// }
+		// for (1..left.items.len) |i| {
+			// if (left.items[i] != .compref){
+				// continue :outer;
+			// }
+			// if (left.items[i].right == null) {
+				// continue :outer;
+			// }
+		// }
+		// return true;
+	// }
+	// return false;
+// }
+// 
+// pub fn compare_complicated_ref(program: *Buffer(Bind), side: *Buffer(Part), bind:*Bind) bool {
+	// //TODO
+// }
+// 
+// //TODO validity checks
+// pub fn link_part(program: *Buffer(Bind), part: *Part, err: Buffer(Error)) LinkError!void {
+	// switch (part.*){
+		// .literal => {
+			// return;
+		// },
+		// .ref => {
+			// for (program.items) |*bind| {
+				// if (compare_single_ref(program, part, bind)){
+					// part.ref.link = bind;
+					// return;
+				// }
+			// }
+		// },
+		// .compref => {
+			// if (part.compref.right) |right| {
+				// for (program.items) |*bind| {
+					// if (compare_ref_complicated(program, part.compref.right, bind)) {
+						// part.compref.link = bind;
+						// return;
+					// }
+				// }
+			// }
+			// else{
+				// for (program.items) |*bind| {
+					// if (compare_ref_compicated(program,part.compref.ref, bind)){
+						// part.compref.link = bind;
+						// return;
+					// }
+				// }
+			// }
+		// }
+	// }
+// }
+// 
+// pub fn link_side(program: *Buffer(Bind), side: *Buffer(Buffer(Part)), err: Buffer(Error)) LinkError!void {
+	// for (side.items) |*alt| {
+		// for (alt.items) |*part| {
+			// try link_part(program, part, err);
+		// }
+	// }
+// }
+// 
+// pub fn add_and_link_new_binds(vast: *VAST, subbinds: Buffer(Bind), err: Buffer(Error)) LinkError!void {
+	// //NOTE expects applied bind variables
+	// const old_len = vast.program.items.len;
+	// vast.program.appendSlice(subbinds.items)
+		// catch unreachable;
+	// for (old_len..vast.program.items.len) |i| {
+		// const inserted = &vast.program.items[i];
+		// try link_side(&vast.program, &inserted.left, err);
+		// try link_side(&vast.program, &inserted.right, err);
+	// }
+// }
+// 
+// pub fn create_and_link_vast(program: Buffer(Bind), err:Buffer(Error)) LinkError!VAST {
+	// var vast = VAST{
+		// .program = program
+	// };
+	// for (vast.program.items) |*bind| {
+		// try link_side(&vast.program, &bind.left, err);
+		// try link_side(&vast.program, &bind.right, err);
+	// }
+// }
