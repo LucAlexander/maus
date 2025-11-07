@@ -249,6 +249,21 @@ pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buf
 			current_alt = Buffer(Part).init(mem.*);
 			continue;
 		}
+		else if (c == '/'){
+			if (current_alt.items.len != 0){
+				err.append(set_error(mem, i.*, "Expected right hand side for equation but found unbind token /\n", .{}))
+					catch unreachable;
+				return ParseError.UnexpectedToken;
+			}
+			if (current_bind.subbinds == null){
+				current_bind.subbinds = mem.create(Buffer(Bind))
+					catch unreachable;
+				current_bind.subbinds.?.* = Buffer(Bind).init(mem.*);
+			}
+			current_bind.subbinds.?.append(try parse_unbind(mem, i, text, err))
+				catch unreachable;
+			continue;
+		}
 		if (c == ';'){
 			current_bind.right.?.append(current_alt)
 				catch unreachable;
@@ -686,7 +701,7 @@ const LinkError = error {
 const VAST = struct {
 	program: Buffer(Bind)
 };
-
+// 
 // pub fn compare_single_ref(program: *Buffer(Bind), part: *Part, bind: *Bind) bool {
 	// outer: for (bind.left.items) |left| {
 		// if (!std.mem.eql(u8, part.ref.name, left.items[0])){
@@ -759,8 +774,9 @@ const VAST = struct {
 		// catch unreachable;
 	// for (old_len..vast.program.items.len) |i| {
 		// const inserted = &vast.program.items[i];
-		// try link_side(&vast.program, &inserted.left, err);
-		// try link_side(&vast.program, &inserted.right, err);
+		// if (inserted.right) |*right| {
+			// try link_side(&vast.program, &inserted.left, err);
+			// try link_side(&vast.program, right, err);
 	// }
 // }
 // 
@@ -769,7 +785,9 @@ const VAST = struct {
 		// .program = program
 	// };
 	// for (vast.program.items) |*bind| {
-		// try link_side(&vast.program, &bind.left, err);
-		// try link_side(&vast.program, &bind.right, err);
+		// if (bind.right)|*right|{
+			// try link_side(&vast.program, &bind.left, err);
+			// try link_side(&vast.program, right, err);
+		// }
 	// }
 // }
