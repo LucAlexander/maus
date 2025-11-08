@@ -785,7 +785,7 @@ const Node  = struct {
 	name: Buffer(Buffer(Part)),
 	rules: Buffer(*Bind),
 	chunk: Buffer(*Bind),
-	structure: Buffer(*Node)
+	structure: Buffer(Buffer(Buffer(Part)))
 };
 
 pub fn compare_part(left: Part, right: Part) bool {
@@ -855,7 +855,7 @@ pub fn create_node(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *
 	var node = Node{
 		.name=bind.left,
 		.rules = Buffer(*Bind).init(mem.*),
-		.structure = Buffer(*Node).init(mem.*)
+		.structure = Buffer(Buffer(Buffer(Part))).init(mem.*)
 	};
 	node.rules.append(bind)
 		catch unreachable;
@@ -919,7 +919,7 @@ pub fn execute_bind(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: 
 		if (find_node(vast, bind)) |node| {
 			node.chunk.appendSlice(bind.subbinds)
 				catch unreachable;
-			node.structure.append(side_as_node(mem, right))
+			node.structure.append(right)
 				catch unreachable;
 		}
 	}
@@ -932,17 +932,13 @@ pub fn execute_bind(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: 
 	}
 }
 
-pub fn side_as_node(mem: *const std.mem.Allocator, side: Buffer(Buffer(Part))) *Node {
-	//TODO
-}
-
 pub fn run_instantiations(vast: *VAST, node: Node, err: *Buffer(Error), chunk: *Buffer(bind)) LinkError!void {
 	for (vast.tree.items) |*candidate| {
 		if (compare_side(node.name, candidate.name)){
 			for (candidate.structure.items) |expansion| {
 				chunk.appendSlice(candidate.chunk.items)
 					catch unreachable;
-				//TODO generate inputs based on the argumented structure of expansion node
+				//TODO generate inputs based on the argumented structure of expansion side
 				// here we have candidate name as a basis for the arguments, node as the basis for the argument application, and expansion as how those arguments apply to the right. 
 			}
 			return;
