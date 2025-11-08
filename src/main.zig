@@ -46,18 +46,18 @@ pub fn main() !void {
 	};
 	show_vast(vast);
 	//TODO add initial value to input_q from main
-	const chunk = Buffer(Bind).init(mem);
+	var chunk = Buffer(Bind).init(mem);
 	defer chunk.deinit();
 	while (vast.input_q.pop()) |node| {
 		chunk.clearRetainingCapacity();
-		run_instantiations(&vast, node, &error_log, &chunk) catch {
+		run_instantiations(&mem, &vast, node, &error_log, &chunk) catch {
 			if (error_log.items.len != 0){
 				for (error_log.items) |err| {
 					show_error(contents, err);
 				}
 			}
 			return;
-		}
+		};
 		add_binds(&mem, &vast, chunk, &error_log) catch {
 			if (error_log.items.len != 0){
 				for (error_log.items) |err| {
@@ -65,7 +65,7 @@ pub fn main() !void {
 				}
 			}
 			return;
-		}
+		};
 	}
 }
 
@@ -724,8 +724,7 @@ const VAST = struct {
 		return VAST{
 			.program=Buffer(Bind).init(mem.*),
 			.tree=Buffer(Node).init(mem.*),
-			.input_q=Q.init(mem),
-			.chunk=Buffer(Bind).init(mem.*)
+			.input_q=Q.init(mem)
 		};
 	}
 };
@@ -743,7 +742,7 @@ const Q = struct {
 		};
 	}
 
-	pub fn push(self: *Q, node: Node) void {
+	pub fn push(self: *Q, node: Buffer(Buffer(Part))) void {
 		if (self.head == null){
 			const n = self.mem.create(QNode)
 				catch unreachable;
@@ -760,31 +759,34 @@ const Q = struct {
 			.val=node,
 			.next=null,
 		};
-		self.tail.next = n;
-		self.tail = n;
+		if (self.tail) |tail| {
+			tail.next = n;
+			self.tail = n;
+		}
 	}
 	
-	pub fn pop(self: *Q) ?Node {
+	pub fn pop(self: *Q) ?Buffer(Buffer(Part)){
 		if (self.head == null) {
 			return null;
 		}
-		const qnode = self.head;
-		const node = qnode.node;
-		self.head = self.head.next;
-		self.mem.deinit(qnode);
-		return node;
+		if (self.head) |qnode| {
+			const node = qnode.val;
+			self.head = qnode.next;
+			return node;
+		}
+		return null;
 	}
 };
 
 const QNode = struct {
-	val: Node,
+	val: Buffer(Buffer(Part)),
 	next :?*QNode
 };
 
 const Node  = struct {
-	name: Buffer(Buffer(Part)),
+	name: Buffer(Part),
 	rules: Buffer(*Bind),
-	chunk: Buffer(*Bind),
+	chunk: Buffer(Bind),
 	structure: Buffer(Buffer(Buffer(Part)))
 };
 
@@ -845,24 +847,30 @@ pub fn compare_side(left: Buffer(Buffer(Part)), right: Buffer(Buffer(Part))) boo
 }
 
 pub fn create_node(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *Buffer(Error)) void {
-	for (vast.tree.items) |*node| {
-		if (compare_side(node.name, bind.left)){
-			node.rules.append(bind)
-				catch unreachable;
-			return;
+	outer: for (bind.left.items) |left| {
+		for (vast.tree.items) |*node| {
+			if (compare_alt(node.name, left)){
+				node.rules.append(bind)
+					catch unreachable;
+				continue :outer;
+			}
 		}
 	}
-	var node = Node{
-		.name=bind.left,
-		.rules = Buffer(*Bind).init(mem.*),
-		.structure = Buffer(Buffer(Buffer(Part))).init(mem.*)
-	};
-	node.rules.append(bind)
-		catch unreachable;
-	vast.tree.append(node)
-		catch unreachable;
+	for (bind.left.items) |alt| {
+		var node = Node{
+			.name=alt,
+			.rules = Buffer(*Bind).init(mem.*),
+			.structure = Buffer(Buffer(Buffer(Part))).init(mem.*),
+			.chunk=Buffer(Bind).init(mem.*)
+		};
+		node.rules.append(bind)
+			catch unreachable;
+		vast.tree.append(node)
+			catch unreachable;
+	}
 }
 
+//TODO validity checks
 pub fn add_binds(mem: *const std.mem.Allocator, vast: *VAST, subbinds: Buffer(Bind), err: *Buffer(Error)) LinkError!void {
 	//NOTE expects applied bind variables
 	const old_len = vast.program.items.len;
@@ -872,7 +880,7 @@ pub fn add_binds(mem: *const std.mem.Allocator, vast: *VAST, subbinds: Buffer(Bi
 		create_node(mem, vast, &vast.program.items[i], err);
 	}
 	for (old_len..vast.program.items.len) |i| {
-		execute_bind(mem, vast, &vast.program.items[i], err);
+		execute_bind(vast, &vast.program.items[i], err);
 	}
 }
 
@@ -886,13 +894,8 @@ pub fn show_vast(vast: VAST) void {
 pub fn show_node(node: Node) void {
 	std.debug.print("Node [\n", .{});
 	std.debug.print("Name: ", .{});
-	for (node.name.items, 0..) |alt, i| {
-		if (i != 0){
-			std.debug.print("| ", .{});
-		}
-		for (alt.items) |part| {
-			show_part(part);
-		}
+	for (node.name.items) |part| {
+		show_part(part);
 	}
 	std.debug.print("\nRules:", .{});
 	for (node.rules.items) |rule| {
@@ -900,48 +903,161 @@ pub fn show_node(node: Node) void {
 	}
 	std.debug.print("\nStructure: ", .{});
 	for (node.structure.items) |s| {
-		show_node(s.*);
+		for (s.items, 0..) |alt, i| {
+			if (i > 0){
+				std.debug.print("| ", .{});
+			}
+			for (alt.items) |part| {
+				show_part(part);
+			}
+		}
 	}
 	std.debug.print("\n]\n\n", .{});
 }
 
 pub fn find_node(vast: *VAST, bind: *Bind) ?*Node {
 	for (vast.tree.items) |*node| {
-		if (compare_side(node.name, bind.left)){
+		if (compare_alt(node.name, bind.left)){
 			return node;
 		}
 	}
 	return null;
 }
 
-pub fn execute_bind(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *Buffer(Error)) void {
+pub fn execute_bind(vast: *VAST, bind: *Bind, _: *Buffer(Error)) void {
 	if (bind.right) |right| {
-		if (find_node(vast, bind)) |node| {
-			node.chunk.appendSlice(bind.subbinds)
-				catch unreachable;
-			node.structure.append(right)
-				catch unreachable;
+		for (bind.left.items) |alt| {
+			for (vast.tree.items) |*node| {
+				if (compare_alt(alt, node.name)){
+					if (bind.subbinds) |subs| {
+						node.chunk.appendSlice(subs.items)
+							catch unreachable;
+					}
+					node.structure.append(right)
+						catch unreachable;
+				}
+			}
 		}
 	}
 	//unbind
-	for (vast.tree.items, 0..) |node, i| {
-		if (compare_side(node.name, bind.left)){
-			_ = vast.tree.swapRemove(i);
-			break;
+	outer: for (bind.left.items) |alt| {
+		for (vast.tree.items, 0..) |node, i| {
+			if (compare_alt(node.name, alt)){
+				_ = vast.tree.swapRemove(i);
+				continue :outer;
+			}
 		}
 	}
 }
 
-pub fn run_instantiations(vast: *VAST, node: Node, err: *Buffer(Error), chunk: *Buffer(bind)) LinkError!void {
-	for (vast.tree.items) |*candidate| {
-		if (compare_side(node.name, candidate.name)){
-			for (candidate.structure.items) |expansion| {
-				chunk.appendSlice(candidate.chunk.items)
-					catch unreachable;
-				//TODO generate inputs based on the argumented structure of expansion side
-				// here we have candidate name as a basis for the arguments, node as the basis for the argument application, and expansion as how those arguments apply to the right. 
+const ArgPair = struct {
+	name: Buffer(Part),
+	val: Part,
+	def_type: Buffer(Part)
+};
+
+pub fn scrape_args(candidate_name: *Buffer(Part), node_name: *Buffer(Part), argmap: *Buffer(ArgPair)) void {
+	for (candidate_name.items, node_name.items) |is_arg, arg_val| {
+		if (is_arg == .compref){
+			if (is_arg.compref.right) |arg_type| {
+				argmap.append(ArgPair{
+					.name=is_arg.compref.ref.*,
+					.val=arg_val,
+					.def_type=arg_type.*
+				}) catch unreachable;
 			}
-			return;
+			else{
+				if (arg_val.compref.right) |right| {
+					scrape_args(is_arg.compref.ref, right, argmap);
+				}
+				else{
+					std.debug.assert(false);
+				}
+			}
+		}
+	}
+}
+
+pub fn expand_args(mem: *const std.mem.Allocator, expansion: *Buffer(Part), argmap: *Buffer(ArgPair)) Buffer(Part) {
+	var new = Buffer(Part).init(mem.*);
+	outer: for (expansion.items) |part| {
+		switch (part){
+			.literal => {
+				new.append(part)
+					catch unreachable;
+			},
+			.ref => {
+				for (argmap.items) |arg| {
+					if (arg.name.items.len == 1){
+						if (compare_part(arg.name.items[0], part)){
+							new.append(arg.val)
+								catch unreachable;
+							continue :outer;
+						}
+					}
+				}
+				new.append(part)
+					catch unreachable;
+			},
+			.compref => {
+				if (part.compref.right) |right| {
+					const synth = Part{
+						.compref = .{
+							.ref = mem.create(Buffer(Part)) catch unreachable,
+							.right = mem.create(Buffer(Part)) catch unreachable,
+							.pos = part.compref.pos
+						}
+					};
+					synth.compref.ref.* = expand_args(mem, part.compref.ref, argmap);
+					synth.compref.right.?.* = expand_args(mem, right, argmap);
+					new.append(synth)
+						catch unreachable;
+				}
+				else{
+					for (argmap.items) |arg| {
+						if (compare_alt(arg.name, part.compref.ref.*)){
+							new.append(arg.val)
+								catch unreachable;
+							continue :outer;
+						}
+					}
+					const synth = Part{
+						.compref = .{
+							.ref=mem.create(Buffer(Part)) catch unreachable,
+							.right=null,
+							.pos=part.compref.pos
+						}
+					};
+					synth.compref.ref.* = expand_args(mem, part.compref.ref, argmap);
+					new.append(synth)
+						catch unreachable;
+				}
+			}
+		}
+	}
+	return new;
+}
+
+pub fn run_instantiations(mem: *const std.mem.Allocator, vast: *VAST, node: Buffer(Buffer(Part)), _: *Buffer(Error), chunk: *Buffer(Bind)) LinkError!void {
+	outer: for (node.items) |*alt| {
+		for (vast.tree.items) |*candidate| {
+			if (compare_alt(alt.*, candidate.name)){
+				for (candidate.structure.items) |expansion| {
+					chunk.appendSlice(candidate.chunk.items)
+						catch unreachable;
+					var argmap = Buffer(ArgPair).init(mem.*);
+					defer argmap.deinit();
+					scrape_args(&candidate.name, alt, &argmap);
+					if (expansion.items.len == 1){
+						const structure = expand_args(mem, &expansion.items[0], &argmap);
+						var wrapper = Buffer(Buffer(Part)).init(mem.*);
+						wrapper.append(structure)
+							catch unreachable;
+						vast.input_q.push(wrapper);
+					}
+				}
+				continue :outer;
+			}
 		}
 	}
 }
