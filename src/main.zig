@@ -45,6 +45,28 @@ pub fn main() !void {
 		return;
 	};
 	show_vast(vast);
+	//TODO add initial value to input_q from main
+	const chunk = Buffer(Bind).init(mem);
+	defer chunk.deinit();
+	while (vast.input_q.pop()) |node| {
+		chunk.clearRetainingCapacity();
+		run_instantiations(&vast, node, &error_log, &chunk) catch {
+			if (error_log.items.len != 0){
+				for (error_log.items) |err| {
+					show_error(contents, err);
+				}
+			}
+			return;
+		}
+		add_binds(&mem, &vast, chunk, &error_log) catch {
+			if (error_log.items.len != 0){
+				for (error_log.items) |err| {
+					show_error(contents, err);
+				}
+			}
+			return;
+		}
+	}
 }
 
 const Part = union(enum) {
@@ -67,14 +89,12 @@ const Bind = struct {
 	left: Buffer(Buffer(Part)),
 	subbinds: ?*Program,
 	right: ?Buffer(Buffer(Part)),
-	node: ?*Node,
 
 	pub fn init(mem: *const std.mem.Allocator) Bind {
 		return Bind {
 			.left = Buffer(Buffer(Part)).init(mem.*),
 			.subbinds = null,
 			.right = null,
-			.node = null
 		};
 	}
 };
@@ -699,17 +719,72 @@ const LinkError = error {
 const VAST = struct {
 	program: Buffer(Bind),
 	tree: Buffer(Node),
+	input_q: Q,
 	pub fn init(mem: *const std.mem.Allocator) VAST {
 		return VAST{
 			.program=Buffer(Bind).init(mem.*),
-			.tree=Buffer(Node).init(mem.*)
+			.tree=Buffer(Node).init(mem.*),
+			.input_q=Q.init(mem),
+			.chunk=Buffer(Bind).init(mem.*)
 		};
 	}
+};
+
+const Q = struct {
+	head: ?*QNode,
+	tail: ?*QNode,
+	mem: *const std.mem.Allocator,
+
+	pub fn init(mem: *const std.mem.Allocator) Q {
+		return Q{
+			.head = null,
+			.tail = null,
+			.mem = mem
+		};
+	}
+
+	pub fn push(self: *Q, node: Node) void {
+		if (self.head == null){
+			const n = self.mem.create(QNode)
+				catch unreachable;
+			n.* = QNode{
+				.val=node,
+				.next=null
+			};
+			self.head = n;
+			self.tail = n;
+		}
+		const n = self.mem.create(QNode)
+			catch unreachable;
+		n.* = QNode{
+			.val=node,
+			.next=null,
+		};
+		self.tail.next = n;
+		self.tail = n;
+	}
+	
+	pub fn pop(self: *Q) ?Node {
+		if (self.head == null) {
+			return null;
+		}
+		const qnode = self.head;
+		const node = qnode.node;
+		self.head = self.head.next;
+		self.mem.deinit(qnode);
+		return node;
+	}
+};
+
+const QNode = struct {
+	val: Node,
+	next :?*QNode
 };
 
 const Node  = struct {
 	name: Buffer(Buffer(Part)),
 	rules: Buffer(*Bind),
+	chunk: Buffer(*Bind),
 	structure: Buffer(*Node)
 };
 
@@ -770,14 +845,11 @@ pub fn compare_side(left: Buffer(Buffer(Part)), right: Buffer(Buffer(Part))) boo
 }
 
 pub fn create_node(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *Buffer(Error)) void {
-	if (bind.right) |_| {
-		for (vast.tree.items) |*node| {
-			if (compare_side(node.name, bind.left)){
-				node.rules.append(bind)
-					catch unreachable;
-				bind.node = node;
-				return;
-			}
+	for (vast.tree.items) |*node| {
+		if (compare_side(node.name, bind.left)){
+			node.rules.append(bind)
+				catch unreachable;
+			return;
 		}
 	}
 	var node = Node{
@@ -789,7 +861,6 @@ pub fn create_node(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *
 		catch unreachable;
 	vast.tree.append(node)
 		catch unreachable;
-	bind.node = &vast.tree.items[vast.tree.items.len-1];
 }
 
 pub fn add_binds(mem: *const std.mem.Allocator, vast: *VAST, subbinds: Buffer(Bind), err: *Buffer(Error)) LinkError!void {
@@ -800,7 +871,9 @@ pub fn add_binds(mem: *const std.mem.Allocator, vast: *VAST, subbinds: Buffer(Bi
 	for (old_len..vast.program.items.len) |i| {
 		create_node(mem, vast, &vast.program.items[i], err);
 	}
-	//TODO execution context
+	for (old_len..vast.program.items.len) |i| {
+		execute_bind(mem, vast, &vast.program.items[i], err);
+	}
 }
 
 pub fn show_vast(vast: VAST) void {
@@ -830,4 +903,49 @@ pub fn show_node(node: Node) void {
 		show_node(s.*);
 	}
 	std.debug.print("\n]\n\n", .{});
+}
+
+pub fn find_node(vast: *VAST, bind: *Bind) ?*Node {
+	for (vast.tree.items) |*node| {
+		if (compare_side(node.name, bind.left)){
+			return node;
+		}
+	}
+	return null;
+}
+
+pub fn execute_bind(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *Buffer(Error)) void {
+	if (bind.right) |right| {
+		if (find_node(vast, bind)) |node| {
+			node.chunk.appendSlice(bind.subbinds)
+				catch unreachable;
+			node.structure.append(side_as_node(mem, right))
+				catch unreachable;
+		}
+	}
+	//unbind
+	for (vast.tree.items, 0..) |node, i| {
+		if (compare_side(node.name, bind.left)){
+			_ = vast.tree.swapRemove(i);
+			break;
+		}
+	}
+}
+
+pub fn side_as_node(mem: *const std.mem.Allocator, side: Buffer(Buffer(Part))) *Node {
+	//TODO
+}
+
+pub fn run_instantiations(vast: *VAST, node: Node, err: *Buffer(Error), chunk: *Buffer(bind)) LinkError!void {
+	for (vast.tree.items) |*candidate| {
+		if (compare_side(node.name, candidate.name)){
+			for (candidate.structure.items) |expansion| {
+				chunk.appendSlice(candidate.chunk.items)
+					catch unreachable;
+				//TODO generate inputs based on the argumented structure of expansion node
+				// here we have candidate name as a basis for the arguments, node as the basis for the argument application, and expansion as how those arguments apply to the right. 
+			}
+			return;
+		}
+	}
 }
