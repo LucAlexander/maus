@@ -44,6 +44,7 @@ pub fn main() !void {
 		}
 		return;
 	};
+	std.debug.print("initial vast:\n", .{});
 	show_vast(vast);
 	//TODO add initial value to input_q from main
 	var chunk = Buffer(Bind).init(mem);
@@ -855,10 +856,8 @@ pub fn create_node(mem: *const std.mem.Allocator, vast: *VAST, bind: *Bind, _: *
 				continue :outer;
 			}
 		}
-	}
-	for (bind.left.items) |alt| {
 		var node = Node{
-			.name=alt,
+			.name=left,
 			.rules = Buffer(*Bind).init(mem.*),
 			.structure = Buffer(Buffer(Buffer(Part))).init(mem.*),
 			.chunk=Buffer(Bind).init(mem.*)
@@ -938,6 +937,7 @@ pub fn execute_bind(vast: *VAST, bind: *Bind, _: *Buffer(Error)) void {
 				}
 			}
 		}
+		return;
 	}
 	//unbind
 	outer: for (bind.left.items) |alt| {
