@@ -70,37 +70,43 @@ pub fn main() !void {
 	}
 }
 
-const Part = union(enum) {
+const Name = union(enum) {
 	literal: struct {
 		text: []u8,
+		pos:u64
+	},
+	name: {
+		text: []u8,
 		pos: u64
-	},
-	ref: struct {
-		name: []u8,
-		pos: u64,
-	},
-	compref: struct {
-		ref: *Buffer(Part),
-		right: ?*Buffer(Part),
-		pos: u64,
 	}
 };
 
-const Bind = struct {
-	left: Buffer(Buffer(Part)),
-	subbinds: ?*Program,
-	right: ?Buffer(Buffer(Part)),
-
-	pub fn init(mem: *const std.mem.Allocator) Bind {
-		return Bind {
-			.left = Buffer(Buffer(Part)).init(mem.*),
-			.subbinds = null,
-			.right = null,
-		};
-	}
+const Arg = union(enum) {
+	name: Name,
+	arg: struct {
+		name: Alt,
+		side: Side
+	},
+	alt: Alt
 };
 
-const Program = Buffer(Bind);
+const Alt = struct {
+	name: []u8,
+	args: Buffer(Arg)
+};
+
+const Side = Buffer(Alt);
+
+const Equation = union (enum){
+	bind: struct {
+		left: Side,
+		right: Side,
+		subbinds: ?*Buffer(Equation)
+	},
+	unbind: Side
+};
+
+const Program = Buffer(Equation);
 
 const ParseError = error {
 	UnexpectedToken,
@@ -109,17 +115,17 @@ const ParseError = error {
 
 pub fn parse(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) Program {
 	var i: u64 = 0;
-	var program = Buffer(Bind).init(mem.*);
-	outer: while (i<text.len) : (i += 1) {
+	var program = Buffer(Equation).init(mem.*);
+	outer: while (i<text.len) {
 		var c = text[i];
 		while (c == ' ' or c == '\n' or c == '\t'){
-			i += 1;
-			if (i == text.len){
+			i + = 1;
+			if (t == text.len){
 				break :outer;
 			}
 			c = text[i];
 		}
-		if (text[i] == '/'){
+		if (text[i] == '/') {
 			const unbind = parse_unbind(mem, &i, text, err) catch {
 				continue;
 			};
@@ -127,525 +133,158 @@ pub fn parse(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) Pro
 				catch unreachable;
 			continue;
 		}
-		const left = parse_left(mem, &i, text, err) catch {
+		const bind = parse_bind(mem, &i, text, err, ';') catch {
 			continue;
 		};
-		const bind = parse_right(mem, &i, text, left, err) catch {
-			continue;
-		};
-		program.append(bind)
-			catch unreachable;
 	}
-	return program;
+} 
+
+pub fn skip_whitespace(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error)) ParseError!void {
+	var c = text[i.*];
+	while (c == ' ' or c == '\n' or c == '\t'){
+		i.* += 1;
+		if (i == text.len){
+			err.append(set_error(mem, i.*, "Unexpected End of File\n", .{}))
+				catch unreachable;
+			return ParseError.UnexpectedEOF;
+		}
+	}
 }
 
-pub fn parse_unbind(mem: *const std.mem.Allocator, i:*u64, text: []u8, err: *Buffer(Error)) ParseError!Bind {
-	var current_alt = Buffer(Part).init(mem.*);
-	var current_bind = Bind.init(mem);
+pub fn parse_unbind(mem: *const std.mem.Allocator, i: *u64, text: []u8. err: *Buffer(Error)) ParseError!Equation {
 	std.debug.assert(text[i.*] == '/');
 	i.* += 1;
-	outer: while (i.* < text.len) : (i.* += 1){
-		var c = text[i.*];
-		while (c == ' ' or c == '\n' or c == '\t'){
-			i.* += 1;
-			if (i.* == text.len){
-				break :outer;
-			}
-			c = text[i.*];
+	const equation = Equation {
+		.unbind = try parse_side(mem, i, text, err, ';')
+	};
+	return equation;
+}
+
+pub fn parse_bind(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error), end_symbol: u8) ParseError!Equation {
+	const left = try parse_side(mem, i, text, err, '=');
+	const right = //TODO
+	const equation = Equation {
+		.bind = .{
+			.left = left,
+			.right = right,
+			.subbinds = subbinds
 		}
-		if (c == ';'){
-			current_bind.left.append(current_alt)
-				catch unreachable;
+	};
+	return equation
+}
+
+pub fn parse_side(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error), end_symbol: u8) ParseError!Side {
+	const side = Buffer(Alt).init(mem.*);
+	while (i.* < text.len) {
+		const alt = try parse_alt(mem, i, text, err, end_symbol);
+		if (text[i.*] == '|'){
 			i.* += 1;
-			return current_bind;
-		}
-		else if (c == '|'){
-			current_bind.left.append(current_alt)
-				catch unreachable;
-			current_alt = Buffer(Part).init(mem.*);
 			continue;
 		}
-		else if (c == '('){
-			i.* += 1;
-			const comp = try parse_comp_ref(mem, i, text, err);
-			std.debug.assert(text[i.*] == ')' or text[i.*] == '=');
-			if (text[i.*] == '='){
-				i.* += 1;
-				const right = try parse_comp_ref(mem, i, text, err);
-				if (text[i.*] == '='){
-					err.append(set_error(mem, i.*, "Encountered = in right of nested binding\n", .{}))
-						catch unreachable;
-					return ParseError.UnexpectedToken;
-				}
-				const part = Part{
-					.compref = .{
-						.ref=mem.create(Buffer(Part)) catch unreachable,
-						.right = mem.create(Buffer(Part)) catch unreachable,
-						.pos = i.*,
-					}
-				};
-				part.compref.ref.* = comp;
-				part.compref.right.?.* = right;
-				current_alt.append(part)
-					catch unreachable;
-				continue;
-			}
-			const part = Part{
-				.compref = .{
-					.ref=mem.create(Buffer(Part)) catch unreachable,
-					.right=null,
-					.pos = i.*,
-				}
-			};
-			part.compref.ref.* = comp;
-			current_alt.append(part)
+		if (text[i.*] != end_symbol){
+			err.append(set_error(mem, i.*, "Encountered unexpected end to alternate\n", .{}))
 				catch unreachable;
-			continue;
+			return PraseError.UnexpectedEOF:
 		}
-		else if (c == '"'){
-			var end = i.* + 1;
-			while (end < text.len) : (end += 1){
-				c = text[end];
-				if (c=='"'){
-					break;
-				}
-			}
-			const part = Part{
-				.literal=.{
-					.pos = i.*,
-					.text=text[i.*+1..end]
-				}
-			};
-			i.* = end;
-			current_alt.append(part)
-				catch unreachable;
-			continue;
-		}
-		var end = i.* + 1;
-		while (end < text.len) : (end += 1){
-			c = text[end];
-			if (c == ' ' or c == '\n' or c == '\t' or c == '|' or c == ';' or c == '='){
-				break;
-			}
-		}
-		const part = Part{
-			.ref=.{
-				.name=text[i.*..end],
-				.pos = i.*,
-			}
-		};
-		i.* = end-1;
-		current_alt.append(part)
-			catch unreachable;
+		return side;
 	}
-	err.append(set_error(mem, i.*, "Encountered end of file while parsing unbind pattern\n", .{}))
+}
+
+pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error), end_symbol: u8) ParseError!Alt {
+	try skip_whitespace(mem, i, text, err);
+	const start = i.*;
+	while (i.*<text.len) {
+		const c = text[i.*];
+		if (c == ' ' or c == '\t' or c == '\n'){
+			const name = text[start .. i.*];
+			var args = Buffer(Arg).init(mem.*);
+			while (i.* < text.len){
+				const arg = try parse_arg(mem, i, text, err);
+				args.append(arg)
+					catch unreachable;
+				if (i.* == end_symbol or i.* == '|'){
+					return Alt {
+						.name = name,
+						.args = args
+					};
+				}
+			}
+		}
+		i.* += 1;
+	}
+	err.append(set_error(mem, i.*, "Encountered end of file while parseing alternate name\n", .{}))
 		catch unreachable;
 	return ParseError.UnexpectedEOF;
 }
 
-pub fn parse_right(mem: *const std.mem.Allocator, i: *u64, text: []u8, left: Buffer(Buffer(Part)), err: *Buffer(Error)) ParseError!Bind {
-	var current_alt = Buffer(Part).init(mem.*);
-	var current_bind = Bind.init(mem);
-	current_bind.left = left;
-	current_bind.right = Buffer(Buffer(Part)).init(mem.*);
-	outer: while (i.* < text.len) : (i.* += 1){
-		var c = text[i.*];
-		while (c == ' ' or c == '\n' or c == '\t'){
-			i.* += 1;
-			if (i.* == text.len){
-				break :outer;
-			}
-			c = text[i.*];
-		}
-		if (c == '='){
-			if (current_alt.items.len == 0){
-				err.append(set_error(mem, i.*, "Expected right hand side for equation, found =\n", .{}))
-					catch unreachable;
-				return ParseError.UnexpectedToken;
-			}
-			i.* += 1;
-			current_bind.right.?.append(current_alt)
-				catch unreachable;
-			if (current_bind.subbinds == null){
-				current_bind.subbinds = mem.create(Buffer(Bind))
-					catch unreachable;
-				current_bind.subbinds.?.* = Buffer(Bind).init(mem.*);
-			}
-			current_bind.subbinds.?.append(try parse_right(mem, i, text, current_bind.right.?, err))
-				catch unreachable;
-			current_bind.right = Buffer(Buffer(Part)).init(mem.*);
-			current_alt = Buffer(Part).init(mem.*);
-			continue;
-		}
-		else if (c == '/'){
-			if (current_alt.items.len != 0){
-				err.append(set_error(mem, i.*, "Expected right hand side for equation but found unbind token /\n", .{}))
-					catch unreachable;
-				return ParseError.UnexpectedToken;
-			}
-			if (current_bind.subbinds == null){
-				current_bind.subbinds = mem.create(Buffer(Bind))
-					catch unreachable;
-				current_bind.subbinds.?.* = Buffer(Bind).init(mem.*);
-			}
-			current_bind.subbinds.?.append(try parse_unbind(mem, i, text, err))
-				catch unreachable;
-			continue;
-		}
-		if (c == ';'){
-			current_bind.right.?.append(current_alt)
-				catch unreachable;
-			i.* += 1;
-			return current_bind;
-		}
-		else if (c == '|'){
-			current_bind.right.?.append(current_alt)
-				catch unreachable;
-			current_alt = Buffer(Part).init(mem.*);
-			continue;
-		}
-		else if (c == '('){
-			i.* += 1;
-			const comp = try parse_comp_ref(mem, i, text, err);
-			std.debug.assert(text[i.*] == ')' or text[i.*] == '=');
-			if (text[i.*] == '='){
-				i.* += 1;
-				const right = try parse_comp_ref(mem, i, text, err);
-				if (text[i.*] == '='){
-					err.append(set_error(mem, i.*, "Encountered = in right of nested binding\n", .{}))
-						catch unreachable;
-					return ParseError.UnexpectedToken;
-				}
-				const part = Part{
-					.compref = .{
-						.ref=mem.create(Buffer(Part)) catch unreachable,
-						.right = mem.create(Buffer(Part)) catch unreachable,
-						.pos = i.*,
-					}
-				};
-				part.compref.ref.* = comp;
-				part.compref.right.?.* = right;
-				current_alt.append(part)
-					catch unreachable;
-				continue;
-			}
-			const part = Part{
-				.compref = .{
-					.ref=mem.create(Buffer(Part)) catch unreachable,
-					.right=null,
-					.pos = i.*,
-				}
+pub fn parse_arg(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error)) ParseError!Arg {
+	try skip_whitespace(mem, i, text, err);
+	var c = text[i.*];
+	if (c == '('){
+		const save = i.*;
+		const eq = (mem, i, text, err, ')') catch {
+			i.* = save;
+			const nested = try parse_alt(mem, i, text, err, ')');
+			return Arg {
+				.alt = nested
 			};
-			part.compref.ref.* = comp;
-			current_alt.append(part)
+		};
+		if (eq.subbinds) |_| {
+			err.append(set_error(mem, i.*, "Encountered subbinds in argument binding\n", .{}))
 				catch unreachable;
-			continue;
 		}
-		else if (c == '"'){
-			var end = i.* + 1;
-			while (end < text.len) : (end += 1){
-				c = text[end];
-				if (c=='"'){
-					break;
-				}
-			}
-			const part = Part{
-				.literal=.{
-					.pos = i.*,
-					.text=text[i.*+1..end]
-				}
-			};
-			i.* = end;
-			current_alt.append(part)
+		if (eq.left.len > 1){
+			err.append(set_error(mem, i.*, "Encountered complex binding name where argname was expected\n", .{}))
 				catch unreachable;
-			continue;
 		}
-		var end = i.* + 1;
-		while (end < text.len) : (end += 1){
-			c = text[end];
-			if (c == ' ' or c == '\n' or c == '\t' or c == '|' or c == ';' or c == '='){
-				break;
-			}
-		}
-		const part = Part{
-			.ref=.{
-				.name=text[i.*..end],
-				.pos = i.*,
+		return Arg {
+			.arg = .{
+				.name = eq.left,
+				.side = eq.right
 			}
 		};
-		i.* = end-1;
-		current_alt.append(part)
-			catch unreachable;
 	}
-	err.append(set_error(mem, i.*, "Encountered end of file while parsing right hand side of equation \n", .{}))
-		catch unreachable;
-	return ParseError.UnexpectedEOF;
+	return Arg {
+		.name=try parse_name(mem, i, text, err)
+	};
 }
 
-pub fn parse_comp_ref(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error)) ParseError!Buffer(Part) {
-	var current_alt = Buffer(Part).init(mem.*);
-	outer: while (i.* < text.len) : (i.* += 1){
-		var c = text[i.*];
-		while (c == ' ' or c == '\n' or c == '\t'){
-			i.* += 1;
-			if (i.* == text.len){
-				break :outer;
-			}
-			c = text[i.*];
-		}
-		if (c == ')' or c=='='){
-			if (current_alt.items.len == 0){
-				err.append(set_error(mem, i.*, "Encountered empty nested expression in equation\n", .{}))
-					catch unreachable;
-				return ParseError.UnexpectedToken;
-			}
-			return current_alt;
-		}
-		else if (c == '('){
-			i.* += 1;
-			const comp = try parse_comp_ref(mem, i, text, err);
-			std.debug.assert(text[i.*] == ')' or text[i.*] == '=');
-			if (text[i.*] == '='){
-				i.* += 1;
-				const right = try parse_comp_ref(mem, i, text, err);
-				if (text[i.*] == '='){
-					err.append(set_error(mem, i.*, "Encountered = in right of nested binding\n", .{}))
-						catch unreachable;
-					return ParseError.UnexpectedToken;
-				}
-				const part = Part{
-					.compref = .{
-						.ref=mem.create(Buffer(Part)) catch unreachable,
-						.right = mem.create(Buffer(Part)) catch unreachable,
-						.pos = i.*,
+pub fn parse_name(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error)) ParseError!Name {
+	try skip_whitespace(mem, i, text, err);
+	var c = text[i.*];
+	if (c == '"'){
+		i.* += 1;
+		const start = i.*;
+		while (i.* < text.len){
+			if (i.* == '"'){
+				return Name {
+					.literal = .{
+						.text = text[start .. i.*],
+						.pos = start
 					}
 				};
-				part.compref.ref.* = comp;
-				part.compref.right.?.* = right;
-				current_alt.append(part)
-					catch unreachable;
-				continue;
 			}
-			const part = Part{
-				.compref = .{
-					.pos = i.*,
-					.ref=mem.create(Buffer(Part)) catch unreachable,
-					.right=null,
-				}
-			};
-			part.compref.ref.* = comp;
-			current_alt.append(part)
-				catch unreachable;
-			continue;
+			i.* += 1;
 		}
-		else if (c == '"'){
-			var end = i.* + 1;
-			while (end < text.len) : (end += 1){
-				c = text[end];
-				if (c=='"'){
-					break;
-				}
-			}
-			const part = Part{
-				.literal=.{
-					.text=text[i.*+1..end],
-					.pos = i.*
-				}
-			};
-			i.* = end;
-			current_alt.append(part)
-				catch unreachable;
-			continue;
-		}
-		var end = i.* + 1;
-		while (end < text.len) : (end += 1){
-			c = text[end];
-			if (c == ' ' or c == '\n' or c == '\t' or c == ')' or c=='='){
-				break;
-			}
-		}
-		const part = Part{
-			.ref=.{
-				.name=text[i.*..end],
-				.pos = i.*,
-			}
-		};
-		i.* = end-1;
-		current_alt.append(part)
+		err.append(set_error(mem, i.*, "Encountered end of file in literal parse\n", .{}))
 			catch unreachable;
+		return ParseError.UnexpectedEOF;
 	}
-	err.append(set_error(mem, i.*, "Encountered end of file while parsing right hand nested equation\n", .{}))
+	const start = i.*;
+	while (i.* < text.len){
+		if (i.* == ' ' or i.* == '\t' or t.* == '\n'){
+			return Name {
+				.name = .{
+					.text = text[start .. i.*],
+					.pos = start
+				}
+			};
+		}
+		i.* += 1;
+	}
+	err.append(set_error(mem, i.*, "Encountered end of file in name parse\n", .{}))
 		catch unreachable;
 	return ParseError.UnexpectedEOF;
-}
-
-pub fn parse_left(mem: *const std.mem.Allocator, i: *u64, text: []u8, err: *Buffer(Error)) ParseError!Buffer(Buffer(Part)) {
-	var current_alt = Buffer(Part).init(mem.*);
-	var current_side = Buffer(Buffer(Part)).init(mem.*);
-	outer: while (i.* < text.len) : (i.* += 1){
-		var c = text[i.*];
-		while (c == ' ' or c == '\n' or c == '\t'){
-			i.* += 1;
-			if (i.* == text.len){
-				break :outer;
-			}
-			c = text[i.*];
-		}
-		if (c == '='){
-			if (current_alt.items.len == 0){
-				err.append(set_error(mem, i.*, "Encountered empty left hand side of equation\n", .{}))
-					catch unreachable;
-				return ParseError.UnexpectedToken;
-			}
-			i.* += 1;
-			current_side.append(current_alt)
-				catch unreachable;
-			return current_side;
-		}
-		else if (c == '|'){
-			current_side.append(current_alt)
-				catch unreachable;
-			current_alt = Buffer(Part).init(mem.*);
-			continue;
-		}
-		else if (c == '('){
-			i.* += 1;
-			const comp = try parse_comp_ref(mem, i, text, err);
-			std.debug.assert(text[i.*] == ')' or text[i.*] == '=');
-			if (text[i.*] == '='){
-				i.* += 1;
-				const right = try parse_comp_ref(mem, i, text, err);
-				if (text[i.*] == '='){
-					err.append(set_error(mem, i.*, "Encountered = in right of nested binding\n", .{}))
-						catch unreachable;
-					return ParseError.UnexpectedToken;
-				}
-				const part = Part{
-					.compref = .{
-						.ref=mem.create(Buffer(Part)) catch unreachable,
-						.right = mem.create(Buffer(Part)) catch unreachable,
-						.pos = i.*,
-					}
-				};
-				part.compref.ref.* = comp;
-				part.compref.right.?.* = right;
-				current_alt.append(part)
-					catch unreachable;
-				continue;
-			}
-			const part = Part{
-				.compref = .{
-					.pos=i.*,
-					.ref=mem.create(Buffer(Part)) catch unreachable,
-					.right=null,
-				}
-			};
-			part.compref.ref.* = comp;
-			current_alt.append(part)
-				catch unreachable;
-			continue;
-		}
-		else if (c == '"'){
-			var end = i.* + 1;
-			while (end < text.len) : (end += 1){
-				c = text[end];
-				if (c=='"'){
-					break;
-				}
-			}
-			const part = Part{
-				.literal=.{
-					.text=text[i.*+1..end],
-					.pos = i.*
-				}
-			};
-			i.* = end;
-			current_alt.append(part)
-				catch unreachable;
-			continue;
-		}
-		var end = i.* + 1;
-		while (end < text.len) : (end += 1){
-			c = text[end];
-			if (c == ' ' or c == '\n' or c == '\t' or c == '=' or c == ':' or c == '|'){
-				break;
-			}
-		}
-		const part = Part{
-			.ref=.{
-				.name=text[i.*..end],
-				.pos = i.*,
-			}
-		};
-		i.* = end-1;
-		current_alt.append(part)
-			catch unreachable;
-	}
-	err.append(set_error(mem, i.*, "Encountered end of file while parsing left side of equation\n", .{}))
-		catch unreachable;
-	return ParseError.UnexpectedEOF;
-}
-
-pub fn show_program(program: Buffer(Bind)) void {
-	for (program.items) |bind| {
-		show_bind(bind);
-	}
-}
-
-pub fn show_bind(bind: Bind) void {
-	if (bind.right == null){
-		std.debug.print("/ ", .{});
-	}
-	for (bind.left.items, 0..) |list, i| {
-		if (i != 0){
-			std.debug.print("| ", .{});
-		}
-		for (list.items) |p| {
-			show_part(p);
-		}
-	}
-	if (bind.right) |right| {
-		std.debug.print("= ", .{});
-		if (bind.subbinds) |subs| {
-			std.debug.print("\n", .{});
-			for (subs.items) |sub| {
-				show_bind(sub);
-			}
-		}
-		for (right.items, 0..) |list, i| {
-			if (i != 0){
-				std.debug.print("| ", .{});
-			}
-			for (list.items) |p| {
-				show_part(p);
-			}
-		}
-	}
-	std.debug.print(";\n", .{});
-}
-
-pub fn show_part(part: Part) void {
-	switch (part){
-		.literal => {
-			std.debug.print("\"{s}\" ", .{part.literal.text});
-		},
-		.ref => {
-			std.debug.print("{s} ", .{part.ref.name});
-		},
-		.compref => {
-			std.debug.print("( ", .{});
-			for (part.compref.ref.items) |sub| {
-				show_part(sub);
-			}
-			if (part.compref.right) |right| {
-				std.debug.print("= ", .{});
-				for (right.items) |sub| {
-					show_part(sub);
-				}
-			}
-			std.debug.print(") ", .{});
-		}
-	}
 }
 
 pub fn set_error(mem: *const std.mem.Allocator, index:u64, comptime fmt: []const u8, args: anytype) Error {
