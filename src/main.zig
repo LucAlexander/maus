@@ -35,39 +35,6 @@ pub fn main() !void {
 	else{
 		show_program(program);
 	}
-	var vast = VAST.init(&mem);
-	add_binds(&mem, &vast, program, &error_log) catch {
-		if (error_log.items.len != 0){
-			for (error_log.items) |err| {
-				show_error(contents, err);
-			}
-		}
-		return;
-	};
-	std.debug.print("initial vast:\n", .{});
-	show_vast(vast);
-	//TODO add initial value to input_q from main
-	var chunk = Buffer(Bind).init(mem);
-	defer chunk.deinit();
-	while (vast.input_q.pop()) |node| {
-		chunk.clearRetainingCapacity();
-		run_instantiations(&mem, &vast, node, &error_log, &chunk) catch {
-			if (error_log.items.len != 0){
-				for (error_log.items) |err| {
-					show_error(contents, err);
-				}
-			}
-			return;
-		};
-		add_binds(&mem, &vast, chunk, &error_log) catch {
-			if (error_log.items.len != 0){
-				for (error_log.items) |err| {
-					show_error(contents, err);
-				}
-			}
-			return;
-		};
-	}
 }
 
 pub fn set_error(mem: *const std.mem.Allocator, index:u64, comptime fmt: []const u8, args: anytype) Error {
