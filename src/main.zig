@@ -26,14 +26,14 @@ pub fn main() !void {
 	};
 	defer allocator.free(contents);
 	var error_log = Buffer(Error).init(mem);
-	const tokens = tokenize(&mem, contents, &error_loc);
+	const tokens = tokenize(&mem, contents, &error_log);
 	if (error_log.items.len != 0){
 		for (error_log.items) |err| {
-			show_error(contens, err);
+			show_error(contents, err);
 		}
 		return;
 	}
-	const program = parse_program(&mem, tokens, &error_log);
+	_ = parse_program(&mem, tokens.items, &error_log);
 	if (error_log.items.len != 0){
 		for (error_log.items) |err| {
 			show_error(contents, err);
@@ -65,7 +65,7 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) 
 		var c = text[i];
 		while (c == ' ' or c == '\t' or c == '\n') {
 			i += 1;
-			if (t == text.len){
+			if (i == text.len){
 				return tokens;
 			}
 			c = text[i];
@@ -128,7 +128,7 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) 
 			else => { }
 		}
 		if (std.ascii.isAlphanumeric(c) or c == '_'){
-			var start = i;
+			const start = i;
 			while (i<text.len){
 				c = text[i];
 				if (!std.ascii.isAlphanumeric(c) or c != '_'){
@@ -139,10 +139,10 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) 
 			tokens.append(Token {
 				.pos = start,
 				.text = text[start .. i],
-				.tag = ID
+				.tag = .ID
 			}) catch unreachable;
 			continue;
-		},
+		}
 		err.append(set_error(mem, i, "Unexpected symbol in token stream {c}", .{text[i]}))
 			catch unreachable;
 	}
@@ -243,42 +243,42 @@ const Arg = union(enum){
 	simple: Token
 };
 
-pub fn parse_program(mem: *const std.mem.Allocator, tokens: Buffer(Token), err: *Buffer(Error)) ParseError!Program {
+pub fn parse_program(mem: *const std.mem.Allocator, tokens: []Token, err: *Buffer(Error)) Program {
 	var i: u64 = 0;
 	var program = Buffer(Equation).init(mem.*);
 	while (i < tokens.len){
 		const t = tokens[i];
 		if (t.tag == .UNBIND){
-			program.append(parse_unbind(mem, &i, tokens, err, SEMI) catch {
+			program.append(parse_unbind(mem, &i, tokens, err, .SEMI) catch {
 				continue;
-			});
+			}) catch unreachable;
 		}
 		else {
-			program.append(parse_bind(mem, &i, tokens, err) catch {
+			program.append(parse_bind(mem, &i, tokens, err, .SEMI) catch {
 				continue;
-			});
+			}) catch unreachable;
 		}
 	}
 	return program;
 }
 
-pub fn parse_subprogram(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(Token), err: *Buffer(Error)) ParseError!Program {
+pub fn parse_subprogram(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *Buffer(Error)) ParseError!Program {
 	var program = Buffer(Equation).init(mem.*);
 	while (i.* < tokens.len){
 		const t = tokens[i.*];
 		if (t.tag == .UNBIND){
 			const save = i.*;
-			program.append(parse_unbind(mem, i, tokens, err, .SEMI) catch |err| {
+			program.append(parse_unbind(mem, i, tokens, err, .SEMI) catch {
 				i.* = save;
 				return program;
-			});
+			}) catch unreachable;
 		}
 		else {
 			const save = i.*;
 			program.append(parse_bind(mem, i, tokens, err, .SEMI) catch {
 				i.* = save;
 				return program;
-			});
+			}) catch unreachable;
 		}
 	}
 	err.append(set_error(mem, i.*, "Unepected end of file in nested program parse\n", .{}))
@@ -286,27 +286,27 @@ pub fn parse_subprogram(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(T
 	return ParseError.UnexpectedEOF;
 }
 
-pub fn parse_unbind(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(Token), err: *Buffer(Error), end_token: TOKEN) ParseError!Equation {
+pub fn parse_unbind(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *Buffer(Error), end_token: TOKEN) ParseError!Equation {
 	var t = tokens[i.*];
-	std.debug.assert(t.tag == UNBIND);
+	std.debug.assert(t.tag == .UNBIND);
 	i.* += 1;
 	t = tokens[i.*];
 	return Equation {
-		.unbind = try parse_side(mem, i, tokens, err, end_token);
+		.unbind = try parse_side(mem, i, tokens, err, end_token)
 	};
 }
 
-pub fn parse_bind(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(Token), err: *Buffer(Error), end_token: TOKEN) ParseError!Equation {
-	const left = try parse_side(mem, i, tokens, err, EQ);
+pub fn parse_bind(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *Buffer(Error), end_token: TOKEN) ParseError!Equation {
+	const left = try parse_side(mem, i, tokens, err, .EQ);
 	const save = i.*;
-	const right = parse_side(mem, i, tokens, err, SEMI) catch {
+	const right = parse_side(mem, i, tokens, err, .SEMI) catch {
 		i.* = save;
 		const sub = try parse_subprogram(mem, i, tokens, err);
 		const right = try parse_side(mem, i, tokens, err, end_token);
 		return Equation {
 			.bind = .{
 				.left = left,
-				.sub = sub,
+				.rules = sub,
 				.right = right
 			}
 		};
@@ -314,16 +314,18 @@ pub fn parse_bind(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(Token),
 	return Equation {
 		.bind = .{
 			.left = left,
-			.sub = Buffer(Equation).init(mem.*),
+			.rules = Buffer(Equation).init(mem.*),
 			.right = right
 		}
 	};
 }
 
-pub fn parse_side(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(Token), err: *Buffer(Error), end_token: TOKEN) ParseError!Side {
+pub fn parse_side(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *Buffer(Error), end_token: TOKEN) ParseError!Side {
 	var side = Buffer(Alt).init(mem.*);
 	while (i.* < tokens.len){
-		const alt = try parse_alt(mem, i, err, end_token);
+		const alt = try parse_alt(mem, i, tokens, err, end_token);
+		side.append(alt)
+			catch unreachable;
 		const t = tokens[i.*];
 		if (t.tag == .OR){
 			i.* += 1;
@@ -337,16 +339,16 @@ pub fn parse_side(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(Token),
 	return ParseError.UnexpectedEOF;
 }
 
-pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(Token), err: *Buffer(Error), end_token: Token) ParseError!Alt {
+pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *Buffer(Error), end_token: TOKEN) ParseError!Alt {
 	const name = tokens[i.*];
 	if (name.tag != .ID) {
 		err.append(set_error(mem, i.*, "Expected identifier for alternate name, found {s}\n", .{name.text}))
 			catch unreachable;
-		return ParseError.UnepectedToken;
+		return ParseError.UnexpectedToken;
 	}
 	i.* += 1;
 	var args = Buffer(Arg).init(mem.*);
-	while (i < tokens.len){
+	while (i.* < tokens.len){
 		const t = tokens[i.*];
 		if (t.tag == .OPEN){
 			const save = i.*;
@@ -357,13 +359,20 @@ pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(Token), 
 					.unnamed = side
 				}) catch unreachable;
 				continue;
-			}
+			};
 			args.append(Arg {
 				.named = bind
 			}) catch unreachable;
 			continue;
 		}
 		const argname = tokens[i.*];
+		if (argname.tag == .OR or argname.tag == end_token){
+			i.* += 1;
+			return Alt {
+				.name=name,
+				.args=args
+			};
+		}
 		if (argname.tag != .ID){
 			err.append(set_error(mem, i.*, "Expected identifier for argument type, found {s}\n", .{argname.text}))
 				catch unreachable;
@@ -374,4 +383,7 @@ pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: Buffer(Token), 
 		}) catch unreachable;
 		i.* += 1;
 	}
+	err.append(set_error(mem, i.*, "Unexpected End of File encountered in alt parse\n", .{}))
+		catch unreachable;
+	return ParseError.UnexpectedToken;
 }
