@@ -33,13 +33,18 @@ pub fn main() !void {
 		}
 		return;
 	}
-	_ = parse_program(&mem, tokens.items, &error_log);
+	for (tokens.items) |tok| {
+		std.debug.print("{s}", .{tok.text});
+	}
+	std.debug.print("\n", .{});
+	const program = parse_program(&mem, tokens.items, &error_log);
 	if (error_log.items.len != 0){
 		for (error_log.items) |err| {
 			show_error(contents, err);
 		}
 		return;
 	}
+	show_program(program);
 }
 
 const TOKEN = enum {
@@ -49,7 +54,8 @@ const TOKEN = enum {
 	OPEN,
 	CLOSE,
 	SEMI,
-	UNBIND
+	UNBIND,
+	LIT	
 };
 
 const Token = struct {
@@ -61,7 +67,7 @@ const Token = struct {
 pub fn tokenize(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) Buffer(Token) {
 	var i: u64 = 0;
 	var tokens = Buffer(Token).init(mem.*);
-	while (i < text.len) {
+	outer: while (i < text.len) {
 		var c = text[i];
 		while (c == ' ' or c == '\t' or c == '\n') {
 			i += 1;
@@ -127,14 +133,35 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) 
 			},
 			else => { }
 		}
-		if (std.ascii.isAlphanumeric(c) or c == '_'){
+		if (c == '"'){
+			i += 1;
 			const start = i;
-			while (i<text.len){
-				c = text[i];
-				if (!std.ascii.isAlphanumeric(c) or c != '_'){
-					break;
+			while (i < text.len){
+				if (text[i] == '"'){
+					tokens.append(Token {
+						.pos = start,
+						.text = text[start .. i],
+						.tag = .LIT
+					}) catch unreachable;
+					i += 1;
+					continue :outer;
 				}
 				i += 1;
+			}
+			err.append(set_error(mem, i, "Unexpected end of file in literal token\n", .{}))
+				catch unreachable;
+			return tokens;
+		}
+		if (std.ascii.isAlphanumeric(c) or c == '_'){
+			const start = i;
+			while (std.ascii.isAlphanumeric(c) or c == '_') {
+				i += 1;
+				if (i == text.len){
+					err.append(set_error(mem, i, "Unexpected end of file in token\n", .{}))
+						catch unreachable;
+					return tokens;
+				}
+				c = text[i];
 			}
 			tokens.append(Token {
 				.pos = start,
@@ -145,6 +172,7 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []u8, err: *Buffer(Error)) 
 		}
 		err.append(set_error(mem, i, "Unexpected symbol in token stream {c}", .{text[i]}))
 			catch unreachable;
+		return tokens;
 	}
 	return tokens;
 }
@@ -239,6 +267,7 @@ const Alt = struct {
 
 const Arg = union(enum){
 	named: Equation,
+	literal: Token,
 	unnamed: Side,
 	simple: Token
 };
@@ -332,6 +361,7 @@ pub fn parse_side(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: 
 			continue;
 		}
 		std.debug.assert(t.tag == end_token);
+		i.* += 1;
 		return side;
 	}
 	err.append(set_error(mem, i.*, "Unexpected End of File in side parse\n", .{}))
@@ -366,8 +396,14 @@ pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *
 			continue;
 		}
 		const argname = tokens[i.*];
-		if (argname.tag == .OR or argname.tag == end_token){
+		if (argname.tag == .LIT){
+			args.append(Arg {
+				.literal = argname
+			}) catch unreachable;
 			i.* += 1;
+			continue;
+		}
+		if (argname.tag == .OR or argname.tag == end_token){
 			return Alt {
 				.name=name,
 				.args=args
@@ -387,3 +423,66 @@ pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *
 		catch unreachable;
 	return ParseError.UnexpectedToken;
 }
+
+pub fn show_program(program: Buffer(Equation)) void {
+	for (program.items) |eq| {
+		switch (eq){
+			.bind => {
+				show_side(eq.bind.left);
+				std.debug.print("= ", .{});
+				show_program(eq.bind.rules);
+				show_side(eq.bind.right);
+				std.debug.print(";\n", .{});
+			},
+			.unbind => {
+				std.debug.print("/", .{});
+				show_side(eq.unbind);
+			}
+		}
+	}
+}
+
+pub fn show_side(side: Buffer(Alt)) void {
+	for (side.items, 0..) |alt, i| {
+		if (i != 0){
+			std.debug.print("| ", .{});
+		}
+		show_alt(alt);
+	}
+}
+
+pub fn show_alt(alt: Alt) void {
+	std.debug.print("{s} ", .{alt.name.text});
+	for (alt.args.items) |arg| {
+		show_arg(arg);
+	}
+}
+
+pub fn show_arg(arg: Arg) void {
+	switch (arg){
+		.named => {
+			if (arg.named == .bind){
+				std.debug.print("(", .{});
+				show_side(arg.named.bind.left);
+				std.debug.print("= ", .{});
+				show_program(arg.named.bind.rules);
+				show_side(arg.named.bind.right);
+				std.debug.print(") ", .{});
+				return;
+			}
+			std.debug.print("/", .{});
+			show_side(arg.named.unbind);
+		},
+		.literal => {
+			std.debug.print("\"{s}\" ", .{arg.literal.text});
+		},
+		.unnamed => {
+			show_side(arg.unnamed);
+		},
+		.simple => {
+			std.debug.print("{s} ", .{arg.simple.text});
+		}
+	}
+}
+//TODO make error reporting work on token positions not token indexes
+
