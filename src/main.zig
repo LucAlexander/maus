@@ -33,10 +33,6 @@ pub fn main() !void {
 		}
 		return;
 	}
-	for (tokens.items) |tok| {
-		std.debug.print("{s}", .{tok.text});
-	}
-	std.debug.print("\n", .{});
 	const program = parse_program(&mem, tokens.items, &error_log);
 	if (error_log.items.len != 0){
 		for (error_log.items) |err| {
@@ -45,6 +41,7 @@ pub fn main() !void {
 		return;
 	}
 	show_program(program);
+	_ = VAST.init(&mem, program, &error_log);
 }
 
 const TOKEN = enum {
@@ -190,7 +187,10 @@ pub fn set_error(mem: *const std.mem.Allocator, index:u64, comptime fmt: []const
 
 pub fn show_error(text: []u8, err: Error) void {
 	var i: u64 = 0;
-	const dist = 32;
+	var dist:u64 = 32;
+	if (err.pos < dist){
+		dist = err.pos;
+	}
 	var start_pos:u64 = 0;
 	var end_pos:u64 = text.len;
 	var found_start = false;
@@ -310,7 +310,7 @@ pub fn parse_subprogram(mem: *const std.mem.Allocator, i: *u64, tokens: []Token,
 			}) catch unreachable;
 		}
 	}
-	err.append(set_error(mem, i.*, "Unepected end of file in nested program parse\n", .{}))
+	err.append(set_error(mem, tokens[i.*-1].pos, "Unepected end of file in nested program parse\n", .{}))
 		catch unreachable;
 	return ParseError.UnexpectedEOF;
 }
@@ -364,7 +364,7 @@ pub fn parse_side(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: 
 		i.* += 1;
 		return side;
 	}
-	err.append(set_error(mem, i.*, "Unexpected End of File in side parse\n", .{}))
+	err.append(set_error(mem, tokens[i.*-1].pos, "Unexpected End of File in side parse\n", .{}))
 		catch unreachable;
 	return ParseError.UnexpectedEOF;
 }
@@ -372,7 +372,7 @@ pub fn parse_side(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: 
 pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *Buffer(Error), end_token: TOKEN) ParseError!Alt {
 	const name = tokens[i.*];
 	if (name.tag != .ID) {
-		err.append(set_error(mem, i.*, "Expected identifier for alternate name, found {s}\n", .{name.text}))
+		err.append(set_error(mem, tokens[i.*].pos, "Expected identifier for alternate name, found {s}\n", .{name.text}))
 			catch unreachable;
 		return ParseError.UnexpectedToken;
 	}
@@ -410,7 +410,7 @@ pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *
 			};
 		}
 		if (argname.tag != .ID){
-			err.append(set_error(mem, i.*, "Expected identifier for argument type, found {s}\n", .{argname.text}))
+			err.append(set_error(mem, tokens[i.*].pos, "Expected identifier for argument type, found {s}\n", .{argname.text}))
 				catch unreachable;
 			return ParseError.UnexpectedToken;
 		}
@@ -419,7 +419,7 @@ pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *
 		}) catch unreachable;
 		i.* += 1;
 	}
-	err.append(set_error(mem, i.*, "Unexpected End of File encountered in alt parse\n", .{}))
+	err.append(set_error(mem, tokens[i.*-1].pos, "Unexpected End of File encountered in alt parse\n", .{}))
 		catch unreachable;
 	return ParseError.UnexpectedToken;
 }
@@ -484,5 +484,115 @@ pub fn show_arg(arg: Arg) void {
 		}
 	}
 }
-//TODO make error reporting work on token positions not token indexes
 
+const VAST = struct {
+	nodes: std.StringHashMap(*Buffer(*VastNode)),
+	
+	pub fn init(mem: *const std.mem.Allocator, program: Buffer(Equation), _: *Buffer(Error)) VAST {
+		var vast = VAST{
+			.nodes = std.StringHashMap(*Buffer(*VastNode)).init(mem.*)
+		};
+		for (program.items) |equation| {
+			switch (equation){
+				.bind => {
+					outer: for (equation.bind.left.items) |alt| {
+						const name = alt.name;
+						if (vast.nodes.get(name.text)) |buffer| {
+							for (buffer.items) |node| {
+								if (compare_args(alt.args, node.alt.args)){
+									continue :outer;
+								}
+							}
+							buffer.*.append(VastNode.init(mem, alt))
+								catch unreachable;
+							continue :outer;
+						}
+						var buffer = mem.create(Buffer(*VastNode))
+							catch unreachable;
+						buffer.* = Buffer(*VastNode).init(mem.*);
+						buffer.append(VastNode.init(mem, alt))
+							catch unreachable;
+						vast.nodes.put(name.text, buffer)
+							catch unreachable;
+					}
+				},
+				.unbind => { }
+			}
+		}
+		return vast;
+	}
+};
+
+pub fn compare_args(a: Buffer(Arg), b: Buffer(Arg)) bool {
+	if (a.items.len != b.items.len){
+		return false;
+	}
+	for (a.items, b.items) |left, right| {
+		if (!compare_arg(left, right)){
+			return false;
+		}
+	}
+	return true;
+}
+
+pub fn compare_arg(a: Arg, b: Arg) bool {
+	switch (a){
+		.named => {
+			if (b != .named){
+				return false;
+			}
+			return compare_side(a.named.bind.left, b.named.bind.left) and compare_side(a.named.bind.right, b.named.bind.right);
+		},
+		.literal => {
+			if (b != .literal){
+				return false;
+			}
+			return std.mem.eql(u8, a.literal.text, b.literal.text);
+		},
+		.unnamed => {
+			if (b != .unnamed){
+				return false;
+			}
+			return compare_side(a.unnamed, b.unnamed);
+		},
+		.simple => {
+			if (b != .simple){
+				return false;
+			}
+			return std.mem.eql(u8, a.simple.text, b.simple.text);
+		}
+	}
+	return false;
+}
+
+pub fn compare_side(a: Side, b: Side) bool {
+	for (a.items, b.items) |left, right| {
+		if (compare_alt(left, right) == false){
+			return false;
+		}
+	}
+	return true;
+}
+
+pub fn compare_alt(a: Alt, b: Alt) bool {
+	if (std.mem.eql(u8, a.name.text, b.name.text) == false){
+		return false;
+	}
+	return compare_args(a.args, b.args);
+}
+
+const VastNode = struct {
+	implications: Buffer(*VastNode),
+	bound: bool,
+	alt: Alt,
+
+	pub fn init(mem: *const std.mem.Allocator, alt: Alt) *VastNode {
+		const ptr = mem.create(VastNode) catch unreachable;
+		ptr.* = VastNode{
+			.implications = Buffer(*VastNode).init(mem.*),
+			.bound = true,
+			.alt = alt
+		};
+		return ptr;
+	}
+};
