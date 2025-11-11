@@ -41,7 +41,8 @@ pub fn main() !void {
 		return;
 	}
 	show_program(program);
-	_ = VAST.init(&mem, program, &error_log);
+	var vast = VAST.init(&mem, program, &error_log);
+	vast.run(&error_log);
 }
 
 const TOKEN = enum {
@@ -485,43 +486,117 @@ pub fn show_arg(arg: Arg) void {
 	}
 }
 
+const RuntimeError = error {
+	UnknownPredicate
+};
+
 const VAST = struct {
+	program: Buffer(Equation),
 	nodes: std.StringHashMap(*Buffer(*VastNode)),
+	mem: *std.mem.Allocator,
 	
-	pub fn init(mem: *const std.mem.Allocator, program: Buffer(Equation), _: *Buffer(Error)) VAST {
-		var vast = VAST{
-			.nodes = std.StringHashMap(*Buffer(*VastNode)).init(mem.*)
+	pub fn init(mem: *const std.mem.Allocator, program: Buffer(Equation), err: *Buffer(Error)) VAST {
+		var vast = VAST{,
+			.program = program,
+			.nodes = std.StringHashMap(*Buffer(*VastNode)).init(mem.*),
+			.mem = mem
 		};
 		for (program.items) |equation| {
-			switch (equation){
-				.bind => {
-					outer: for (equation.bind.left.items) |alt| {
-						const name = alt.name;
-						if (vast.nodes.get(name.text)) |buffer| {
-							for (buffer.items) |node| {
-								if (compare_args(alt.args, node.alt.args)){
-									continue :outer;
-								}
-							}
-							buffer.*.append(VastNode.init(mem, alt))
-								catch unreachable;
-							continue :outer;
-						}
-						var buffer = mem.create(Buffer(*VastNode))
-							catch unreachable;
-						buffer.* = Buffer(*VastNode).init(mem.*);
-						buffer.append(VastNode.init(mem, alt))
-							catch unreachable;
-						vast.nodes.put(name.text, buffer)
-							catch unreachable;
-					}
-				},
-				.unbind => { }
-			}
+			vast.add(equation, err);
 		}
 		return vast;
+	},
+
+	pub fn add(vast: *VAST, equation: Equation, _: *Buffer(Error)) void {
+		switch (equation){
+			.bind => {
+				outer: for (equation.bind.left.items) |alt| {
+					const name = alt.name;
+					if (vast.nodes.get(name.text)) |buffer| {
+						for (buffer.items) |node| {
+							if (compare_args(alt.args, node.alt.args)){
+								continue :outer;
+							}
+						}
+						buffer.*.append(VastNode.init(mem, alt))
+							catch unreachable;
+						continue :outer;
+					}
+					var buffer = mem.create(Buffer(*VastNode))
+						catch unreachable;
+					buffer.* = Buffer(*VastNode).init(mem.*);
+					buffer.append(VastNode.init(mem, alt))
+						catch unreachable;
+					vast.nodes.put(name.text, buffer)
+						catch unreachable;
+				}
+			},
+			.unbind => { }
+		}
+	},
+
+	pub fn find(vast: *VAST, alt: Alt) ?*VastNode {
+		const name = alt.name;
+		if (vast.nodes.get(name.text)) |buffer| {
+			for (buffer.items) |node| {
+				if (compare_args(alt.args, node.alt.args)){
+					return node;
+				}
+			}
+		}
+		return null;
+	},
+
+	pub fn run(vast: *VAST, err: *Buffer(Error)) void {
+		const dummy = Buffer(Arg).init(vast.mem.*);
+		for (vast.program.items) |equation| {
+			for (equation.left.items) |alt| {
+				dummy.clearRetainingCapacity();
+				vast.compute(dummy, alt, equation.rules, equation.right) catch {
+					continue
+				};
+			}
+		}
+	},
+
+	pub fn compute(vast: *VAST, args: Buffer(Args), alt: Alt, program: Program, right: Side, err: *Buffer(Error)) RuntimeError!void {
+		if (vast.find(alt)) |node| {
+			const newargs = scrape_args(vast.mem, alt);
+			const save = args.len;
+			args.appendSlice(newargs)
+				catch unreachable;
+			for (program.items) |equation| {
+				for (equation.left.items) |subalt| {
+					try vast.compute(args, subalt, equation.rules, equation.right);
+				}
+			}
+			for (right.items) |right_alt| {
+				try vast.link(args, alt, right_alt);
+			}
+			args.len = save;
+		}
+		err.append(set_error(vast.mem, alt.name.pos, "Unable to find logical node corresponding to left side of equation\n", .{}))
+			catch unreachable;
+		return RuntimeError.UnknownPredicate;
+	},
+
+	pub fn link(vast: *VAST, args: Buffer(Arg), left: Alt, right: Alt) RuntimeError!void {
+		//TODO find a matching right node
+			//check all right named nodes and check if any arglengths match, if so find if any paths exist from right to the node
+		//go over right arg usages and make sure there are no new arg names, if arg types differ make sure there is a path from left to right
+		//link those two nodes only if not already
 	}
 };
+
+pub fn scrape_args(mem: *const std.mem.Allocator, alt: Alt) Buffer(Arg) {
+	var args = Buffer(Arg).init(mem.*);
+	for (alt.args.items) |arg| {
+		if (arg == .named){
+			args.append(arg);
+		}
+	}
+	return args;
+}
 
 pub fn compare_args(a: Buffer(Arg), b: Buffer(Arg)) bool {
 	if (a.items.len != b.items.len){
@@ -596,3 +671,4 @@ const VastNode = struct {
 		return ptr;
 	}
 };
+
