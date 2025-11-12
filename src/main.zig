@@ -550,11 +550,32 @@ const VAST = struct {
 	pub fn run(vast: *VAST, err: *Buffer(Error)) void {
 		const dummy = Buffer(Arg).init(vast.mem.*);
 		for (vast.program.items) |equation| {
-			for (equation.left.items) |alt| {
-				dummy.clearRetainingCapacity();
-				vast.compute(dummy, alt, equation.rules, equation.right) catch {
-					continue
-				};
+			if (equation == .bind){
+				for (equation.bind.left.items) |alt| {
+					dummy.clearRetainingCapacity();
+					vast.compute(dummy, alt, equation.bind.rules, equation.bind.right) catch {
+						continue
+					};
+				}
+			}
+			else{
+				for (equation.unbind.items) |alt| {
+					if (vast.find(alt)) |node| {
+						node.bound = false;
+						node.implications.clearRetainingCapacity();
+						for (node.reverse.items) |inv| {
+							var i: u64 = 0;
+							while (i < inv.implications.items.len){
+								var self = inv.implications.items[i];
+								while (self == node){
+									inv.implications.swapRemove(i);
+									self = inv.implications.items[i];
+								}
+							}
+						}
+						node.reverse.clearRetainingCapacity();
+					}
+				}
 			}
 		}
 	},
@@ -571,7 +592,7 @@ const VAST = struct {
 				}
 			}
 			for (right.items) |right_alt| {
-				try vast.link(args, alt, right_alt);
+				try vast.link(args, node, alt, right_alt);
 			}
 			args.len = save;
 		}
@@ -580,11 +601,36 @@ const VAST = struct {
 		return RuntimeError.UnknownPredicate;
 	},
 
-	pub fn link(vast: *VAST, args: Buffer(Arg), left: Alt, right: Alt) RuntimeError!void {
-		//TODO find a matching right node
-			//check all right named nodes and check if any arglengths match, if so find if any paths exist from right to the node
-		//go over right arg usages and make sure there are no new arg names, if arg types differ make sure there is a path from left to right
-		//link those two nodes only if not already
+	pub fn link(vast: *VAST, args: Buffer(Arg), left_node: *VastNode, left: Alt, right: Alt) RuntimeError!void {
+		const right_name = right.name;
+		if (vast.nodes.get(name.text)) |buffer| {
+			for (buffer.items) |node| {
+				if (node.bound == false){
+					continue;
+				}
+				if (node.alt.args.items.len != right.args.items.len){
+					continue;
+				}
+				for (node.alt.args, right.args) |candidate, real| {
+					if (compare_arg(candidate, real)){
+						continue;
+					}
+					try vast.ensure_path(real, candidate, err);
+				}
+				//TODO ensure paths exist between double bound vals, and ensure no new equations are created on the right
+				left_node.implications.append(node)
+					catch unreachable;
+			}
+		}
+	},
+
+	pub fn find_arg_node(vast: *VAST, arg: Arg) ?*VastNode {
+		//TODO
+	},
+
+	pub fn ensure_path(vast: *VAST, left: Arg, right: Arg, err: *Buffer(Error)) RuntimeError!void {
+
+		//TODO
 	}
 };
 
@@ -658,6 +704,7 @@ pub fn compare_alt(a: Alt, b: Alt) bool {
 
 const VastNode = struct {
 	implications: Buffer(*VastNode),
+	reverse: Buffer(*VastNode),
 	bound: bool,
 	alt: Alt,
 
@@ -665,6 +712,7 @@ const VastNode = struct {
 		const ptr = mem.create(VastNode) catch unreachable;
 		ptr.* = VastNode{
 			.implications = Buffer(*VastNode).init(mem.*),
+			.reverse = Buffer(*VastNode).init(mem.*),
 			.bound = true,
 			.alt = alt
 		};
