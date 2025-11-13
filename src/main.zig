@@ -493,10 +493,10 @@ const RuntimeError = error {
 const VAST = struct {
 	program: Buffer(Equation),
 	nodes: std.StringHashMap(*Buffer(*VastNode)),
-	mem: *std.mem.Allocator,
+	mem: *const std.mem.Allocator,
 	
 	pub fn init(mem: *const std.mem.Allocator, program: Buffer(Equation), err: *Buffer(Error)) VAST {
-		var vast = VAST{,
+		var vast = VAST{
 			.program = program,
 			.nodes = std.StringHashMap(*Buffer(*VastNode)).init(mem.*),
 			.mem = mem
@@ -505,7 +505,7 @@ const VAST = struct {
 			vast.add(equation, err);
 		}
 		return vast;
-	},
+	}
 
 	pub fn add(vast: *VAST, equation: Equation, _: *Buffer(Error)) void {
 		switch (equation){
@@ -518,14 +518,14 @@ const VAST = struct {
 								continue :outer;
 							}
 						}
-						buffer.*.append(VastNode.init(mem, alt))
+						buffer.*.append(VastNode.init(vast.mem, alt))
 							catch unreachable;
 						continue :outer;
 					}
-					var buffer = mem.create(Buffer(*VastNode))
+					var buffer = vast.mem.create(Buffer(*VastNode))
 						catch unreachable;
-					buffer.* = Buffer(*VastNode).init(mem.*);
-					buffer.append(VastNode.init(mem, alt))
+					buffer.* = Buffer(*VastNode).init(vast.mem.*);
+					buffer.append(VastNode.init(vast.mem, alt))
 						catch unreachable;
 					vast.nodes.put(name.text, buffer)
 						catch unreachable;
@@ -533,7 +533,7 @@ const VAST = struct {
 			},
 			.unbind => { }
 		}
-	},
+	}
 
 	pub fn find(vast: *VAST, alt: Alt) ?*VastNode {
 		const name = alt.name;
@@ -545,16 +545,16 @@ const VAST = struct {
 			}
 		}
 		return null;
-	},
+	}
 
 	pub fn run(vast: *VAST, err: *Buffer(Error)) void {
-		const dummy = Buffer(Arg).init(vast.mem.*);
+		var dummy = Buffer(Arg).init(vast.mem.*);
 		for (vast.program.items) |equation| {
 			if (equation == .bind){
 				for (equation.bind.left.items) |alt| {
 					dummy.clearRetainingCapacity();
-					vast.compute(dummy, alt, equation.bind.rules, equation.bind.right) catch {
-						continue
+					vast.compute(&dummy, alt, equation.bind.rules, equation.bind.right, err) catch {
+						continue;
 					};
 				}
 			}
@@ -568,9 +568,10 @@ const VAST = struct {
 							while (i < inv.implications.items.len){
 								var self = inv.implications.items[i];
 								while (self == node){
-									inv.implications.swapRemove(i);
+									_ = inv.implications.swapRemove(i);
 									self = inv.implications.items[i];
 								}
+								i += 1;
 							}
 						}
 						node.reverse.clearRetainingCapacity();
@@ -578,40 +579,45 @@ const VAST = struct {
 				}
 			}
 		}
-	},
+	}
 
-	pub fn compute(vast: *VAST, args: Buffer(Args), alt: Alt, program: Program, right: Side, err: *Buffer(Error)) RuntimeError!void {
+	pub fn compute(vast: *VAST, args: *Buffer(Arg), alt: Alt, program: Program, right: Side, err: *Buffer(Error)) RuntimeError!void {
 		if (vast.find(alt)) |node| {
 			const newargs = scrape_args(vast.mem, alt);
-			const save = args.len;
-			args.appendSlice(newargs)
+			const save = args.items.len;
+			args.appendSlice(newargs.items)
 				catch unreachable;
 			for (program.items) |equation| {
-				for (equation.left.items) |subalt| {
-					try vast.compute(args, subalt, equation.rules, equation.right);
+				if (equation == .bind) {
+					for (equation.bind.left.items) |subalt| {
+						try vast.compute(args, subalt, equation.bind.rules, equation.bind.right, err);
+					}
+				}
+				else{
+					//TODO replicate what happened in the base of compute
 				}
 			}
 			for (right.items) |right_alt| {
-				try vast.link(args, node, alt, right_alt);
+				try vast.link(args, node, right_alt, err);
 			}
-			args.len = save;
+			args.items.len = save;
 		}
 		err.append(set_error(vast.mem, alt.name.pos, "Unable to find logical node corresponding to left side of equation\n", .{}))
 			catch unreachable;
 		return RuntimeError.UnknownPredicate;
-	},
+	}
 
-	pub fn link(vast: *VAST, args: Buffer(Arg), left_node: *VastNode, left: Alt, right: Alt) RuntimeError!void {
+	pub fn link(vast: *VAST, args: *Buffer(Arg), left_node: *VastNode, right: Alt, err: *Buffer(Error)) RuntimeError!void {
 		const right_name = right.name;
 		if (vast.nodes.get(right_name.text)) |buffer| {
 			for (buffer.items) |rnode| {
-				if (node.bound == false){
+				if (rnode.bound == false){
 					continue;
 				}
 				if (rnode.alt.args.items.len != right.args.items.len){
 					continue;
 				}
-				for (rnode.alt.args, right.args) |candidate, real| {
+				for (rnode.alt.args.items, right.args.items) |candidate, real| {
 					if (compare_arg(candidate, real)){
 						continue;
 					}
@@ -620,12 +626,12 @@ const VAST = struct {
 				const rargs = scrape_args(vast.mem, right);
 				outer: for (rargs.items) |right_arg| {
 					for (args.items) |global_arg| {
-						if (right_arg == .equation and global_arg == .equation) {
-							if (right_arg.equation == .bind and global_arg.equation == .bind){
-								inner: for (right_arg.equation.bind.left.items) |right_alt| {
-									for (global_arg.equation.bind.left.items) |global_alt| {
+						if (right_arg == .named and global_arg == .named) {
+							if (right_arg.named == .bind and global_arg.named == .bind){
+								for (right_arg.named.bind.left.items) |right_alt| {
+									for (global_arg.named.bind.left.items) |global_alt| {
 										if (compare_alt(global_alt, right_alt)){
-											try ensure_path(global_arg, right_arg, err);
+											try vast.ensure_path(global_arg, right_arg, err);
 											continue :outer;
 										}
 									}
@@ -633,37 +639,77 @@ const VAST = struct {
 							}
 						}
 					}
-					err.append(set_error(mem, 0, "Unable to find declaration for right argument constraint\n", .{}))
+					err.append(set_error(vast.mem, 0, "Unable to find declaration for right argument constraint\n", .{}))
 						catch unreachable;
 				}
-				left_node.implications.append(node)
+				left_node.implications.append(rnode)
 					catch unreachable;
 			}
 		}
-	},
+	}
 
-	pub fn find_arg_node(vast: *VAST, arg: Arg) ?*Buffer(VastNode) {
+	pub fn find_arg_node(vast: *VAST, arg: Arg) ?Buffer(*VastNode) {
+		var buffer = Buffer(*VastNode).init(vast.mem.*);
 		switch (arg){
 			.named => {
-				
+				if (arg.named == .bind){
+					for (arg.named.bind.left.items) |alt| {
+						if (vast.find(alt)) |node| {
+							buffer.append(node)
+								catch unreachable;
+							continue;
+						}
+						return null;
+					}
+				}
+				return null;
 			},
 			.unnamed => {
-				
+				for (arg.unnamed.items) |alt| {
+					if (vast.find(alt)) |node| {
+						buffer.append(node)
+							catch unreachable;
+						continue;
+					}
+					return null;
+				}
 			},
 			.literal => {
-				
-			}
+				if (vast.nodes.get(arg.literal.text))|nodes|{
+					if (nodes.items.len != 1){
+						return null;
+					}
+					buffer.append(nodes.items[0])
+						catch unreachable;
+				}
+			},
 			.simple => {
-				
+				if (vast.nodes.get(arg.simple.text)) |nodes| {
+					if (nodes.items.len != 1) {
+						return null;
+					}
+					buffer.append(nodes.items[0])
+						catch unreachable;
+				}
+				else{
+					return null;
+				}
 			}
 		}
-	},
+		return buffer;
+	}
 
 	pub fn ensure_path(vast: *VAST, left: Arg, right: Arg, err: *Buffer(Error)) RuntimeError!void {
-		for (vast.find_arg_node(left).items) |lnode| {
-			for (vast.find_arg_node(right).items) |rnode| {
-				if (dfs_path(lnode, rnode)){
-					return;
+		var empty = std.AutoHashMap(*VastNode, bool).init(vast.mem.*);
+		if (vast.find_arg_node(left)) |leftnodes| {
+			if (vast.find_arg_node(right)) |rightnodes| {
+				for (leftnodes.items) |lnode| {
+					for (rightnodes.items) |rnode| {
+						empty.clearRetainingCapacity();
+						if (dfs_path(lnode, rnode, &empty)){
+							return;
+						}
+					}
 				}
 			}
 		}
@@ -672,8 +718,8 @@ const VAST = struct {
 	}
 };
 
-pub fn dfs_path(left: *VastNode, right: *VastNode, visited: std.HashMap(*VastNode, bool)) bool {
-	visited.put(left)
+pub fn dfs_path(left: *VastNode, right: *VastNode, visited: *std.AutoHashMap(*VastNode, bool)) bool {
+	visited.put(left, true)
 		catch unreachable;
 	for (left.implications.items) |node| {
 		if (node == right){
@@ -682,7 +728,7 @@ pub fn dfs_path(left: *VastNode, right: *VastNode, visited: std.HashMap(*VastNod
 		if (visited.get(node)) |_| {
 			continue;
 		}
-		if (dfs_path(node, right)){
+		if (dfs_path(node, right, visited)){
 			return true;
 		}
 	}
@@ -693,7 +739,8 @@ pub fn scrape_args(mem: *const std.mem.Allocator, alt: Alt) Buffer(Arg) {
 	var args = Buffer(Arg).init(mem.*);
 	for (alt.args.items) |arg| {
 		if (arg == .named){
-			args.append(arg);
+			args.append(arg)
+				catch unreachable;
 		}
 	}
 	return args;
