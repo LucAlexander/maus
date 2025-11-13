@@ -43,6 +43,7 @@ pub fn main() !void {
 	show_program(program);
 	var vast = VAST.init(&mem, program, &error_log);
 	vast.run(&error_log);
+	vast.show();
 }
 
 const TOKEN = enum {
@@ -615,6 +616,7 @@ const VAST = struct {
 									i += 1;
 								}
 							}
+							unnode.reverse.clearRetainingCapacity();
 						}
 					}
 				}
@@ -738,6 +740,15 @@ const VAST = struct {
 		err.append(set_error(vast.mem, 0, "Unable to prove constraint\n", .{}))
 			catch unreachable;
 	}
+
+	pub fn show(vast: *VAST) void {
+		var it = vast.nodes.iterator();
+		while (it.next()) |nodes| {
+			for (nodes.value_ptr.*.items) |node| {
+				node.show();
+			}
+		}
+	}
 };
 
 pub fn dfs_path(left: *VastNode, right: *VastNode, visited: *std.AutoHashMap(*VastNode, bool)) bool {
@@ -841,6 +852,15 @@ const VastNode = struct {
 			.alt = alt
 		};
 		return ptr;
+	}
+
+	pub fn show(node: *VastNode) void {
+		show_alt(node.alt);
+		std.debug.print("[{*}]: {}\n", .{node, node.bound});
+		for (node.implications.items) |impl| {
+			std.debug.print("  `-> [{*}]\n", .{impl});
+		}
+		std.debug.print("\n", .{});
 	}
 };
 
