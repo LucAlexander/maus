@@ -569,6 +569,9 @@ const VAST = struct {
 								var self = inv.implications.items[i];
 								while (self == node){
 									_ = inv.implications.swapRemove(i);
+									if (i == inv.implications.items.len){
+										break;
+									}
 									self = inv.implications.items[i];
 								}
 								i += 1;
@@ -594,7 +597,26 @@ const VAST = struct {
 					}
 				}
 				else{
-					//TODO replicate what happened in the base of compute
+					for (equation.unbind.items) |unalt| {
+						if (vast.find(unalt)) |unnode| {
+							unnode.bound = false;
+							unnode.implications.clearRetainingCapacity();
+							for (unnode.reverse.items) |inv| {
+								var i: u64 = 0;
+								while (i < inv.implications.items.len) {
+									var self = inv.implications.items[i];
+									while (self == unnode){
+										_ = inv.implications.swapRemove(i);
+										if (i == inv.implications.items.len){
+											break;
+										}
+										self = inv.implications.items[i];
+									}
+									i += 1;
+								}
+							}
+						}
+					}
 				}
 			}
 			for (right.items) |right_alt| {
