@@ -603,36 +603,91 @@ const VAST = struct {
 
 	pub fn link(vast: *VAST, args: Buffer(Arg), left_node: *VastNode, left: Alt, right: Alt) RuntimeError!void {
 		const right_name = right.name;
-		if (vast.nodes.get(name.text)) |buffer| {
-			for (buffer.items) |node| {
+		if (vast.nodes.get(right_name.text)) |buffer| {
+			for (buffer.items) |rnode| {
 				if (node.bound == false){
 					continue;
 				}
-				if (node.alt.args.items.len != right.args.items.len){
+				if (rnode.alt.args.items.len != right.args.items.len){
 					continue;
 				}
-				for (node.alt.args, right.args) |candidate, real| {
+				for (rnode.alt.args, right.args) |candidate, real| {
 					if (compare_arg(candidate, real)){
 						continue;
 					}
 					try vast.ensure_path(real, candidate, err);
 				}
-				//TODO ensure paths exist between double bound vals, and ensure no new equations are created on the right
+				const rargs = scrape_args(vast.mem, right);
+				outer: for (rargs.items) |right_arg| {
+					for (args.items) |global_arg| {
+						if (right_arg == .equation and global_arg == .equation) {
+							if (right_arg.equation == .bind and global_arg.equation == .bind){
+								inner: for (right_arg.equation.bind.left.items) |right_alt| {
+									for (global_arg.equation.bind.left.items) |global_alt| {
+										if (compare_alt(global_alt, right_alt)){
+											try ensure_path(global_arg, right_arg, err);
+											continue :outer;
+										}
+									}
+								}
+							}
+						}
+					}
+					err.append(set_error(mem, 0, "Unable to find declaration for right argument constraint\n", .{}))
+						catch unreachable;
+				}
 				left_node.implications.append(node)
 					catch unreachable;
 			}
 		}
 	},
 
-	pub fn find_arg_node(vast: *VAST, arg: Arg) ?*VastNode {
-		//TODO
+	pub fn find_arg_node(vast: *VAST, arg: Arg) ?*Buffer(VastNode) {
+		switch (arg){
+			.named => {
+				
+			},
+			.unnamed => {
+				
+			},
+			.literal => {
+				
+			}
+			.simple => {
+				
+			}
+		}
 	},
 
 	pub fn ensure_path(vast: *VAST, left: Arg, right: Arg, err: *Buffer(Error)) RuntimeError!void {
-
-		//TODO
+		for (vast.find_arg_node(left).items) |lnode| {
+			for (vast.find_arg_node(right).items) |rnode| {
+				if (dfs_path(lnode, rnode)){
+					return;
+				}
+			}
+		}
+		err.append(set_error(vast.mem, 0, "Unable to prove constraint\n", .{}))
+			catch unreachable;
 	}
 };
+
+pub fn dfs_path(left: *VastNode, right: *VastNode, visited: std.HashMap(*VastNode, bool)) bool {
+	visited.put(left)
+		catch unreachable;
+	for (left.implications.items) |node| {
+		if (node == right){
+			return true;
+		}
+		if (visited.get(node)) |_| {
+			continue;
+		}
+		if (dfs_path(node, right)){
+			return true;
+		}
+	}
+	return false;
+}
 
 pub fn scrape_args(mem: *const std.mem.Allocator, alt: Alt) Buffer(Arg) {
 	var args = Buffer(Arg).init(mem.*);
@@ -720,3 +775,4 @@ const VastNode = struct {
 	}
 };
 
+//TODO allow literals to be nodes heads
