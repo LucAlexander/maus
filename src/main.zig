@@ -43,6 +43,12 @@ pub fn main() !void {
 	show_program(program);
 	var vast = VAST.init(&mem, program, &error_log);
 	vast.run(&error_log);
+	if (error_log.items.len != 0){
+		for (error_log.items) |err| {
+			show_error(contents, err);
+		}
+		return;
+	}
 	vast.show();
 }
 
@@ -223,6 +229,9 @@ pub fn show_error(text: []u8, err: Error) void {
 		catch unreachable;
 	stderr.print("{d:06} | ", .{line})
 		catch unreachable;
+	if (start_pos  >= end_pos){
+		start_pos = end_pos;
+	}
 	for (start_pos .. end_pos) |k| {
 		if (text[k] == '\n'){
 			line += 1;
@@ -588,46 +597,47 @@ const VAST = struct {
 		}
 	}
 
-	pub fn compute(vast: *VAST, args: *Buffer(Arg), alt: Alt, program: Program, right: Side, err: *Buffer(Error)) RuntimeError!void {
+	pub fn compute(vast: *VAST, args: *Buffer(Arg), alt: Alt, _: Program, right: Side, err: *Buffer(Error)) RuntimeError!void {
 		if (vast.find(alt)) |node| {
 			const newargs = scrape_args(vast.mem, alt);
 			const save = args.items.len;
 			args.appendSlice(newargs.items)
 				catch unreachable;
-			for (program.items) |equation| {
-				if (equation == .bind) {
-					for (equation.bind.left.items) |subalt| {
-						try vast.compute(args, subalt, equation.bind.rules, equation.bind.right, err);
-					}
-				}
-				else{
-					for (equation.unbind.items) |unalt| {
-						if (vast.find(unalt)) |unnode| {
-							unnode.bound = false;
-							unnode.implications.clearRetainingCapacity();
-							for (unnode.reverse.items) |inv| {
-								var i: u64 = 0;
-								while (i < inv.implications.items.len) {
-									var self = inv.implications.items[i];
-									while (self == unnode){
-										_ = inv.implications.swapRemove(i);
-										if (i == inv.implications.items.len){
-											break;
-										}
-										self = inv.implications.items[i];
-									}
-									i += 1;
-								}
-							}
-							unnode.reverse.clearRetainingCapacity();
-						}
-					}
-				}
-			}
+			// for (program.items) |equation| {
+				// if (equation == .bind) {
+					// for (equation.bind.left.items) |subalt| {
+						// try vast.compute(args, subalt, equation.bind.rules, equation.bind.right, err);
+					// }
+				// }
+				// else{
+					// for (equation.unbind.items) |unalt| {
+						// if (vast.find(unalt)) |unnode| {
+							// unnode.bound = false;
+							// unnode.implications.clearRetainingCapacity();
+							// for (unnode.reverse.items) |inv| {
+								// var i: u64 = 0;
+								// while (i < inv.implications.items.len) {
+									// var self = inv.implications.items[i];
+									// while (self == unnode){
+										// _ = inv.implications.swapRemove(i);
+										// if (i == inv.implications.items.len){
+											// break;
+										// }
+										// self = inv.implications.items[i];
+									// }
+									// i += 1;
+								// }
+							// }
+							// unnode.reverse.clearRetainingCapacity();
+						// }
+					// }
+				// }
+			// }
 			for (right.items) |right_alt| {
 				try vast.link(args, node, right_alt, err);
 			}
 			args.items.len = save;
+			return;
 		}
 		err.append(set_error(vast.mem, alt.name.pos, "Unable to find logical node corresponding to left side of equation\n", .{}))
 			catch unreachable;
@@ -644,7 +654,17 @@ const VAST = struct {
 				if (rnode.alt.args.items.len != right.args.items.len){
 					continue;
 				}
-				for (rnode.alt.args.items, right.args.items) |candidate, real| {
+				outer: for (rnode.alt.args.items, right.args.items) |candidate, real| {
+					if (real == .simple){
+						for (args.items) |argument| {
+							std.debug.assert(argument == .named);
+							std.debug.assert(argument.named == .bind);
+							if (std.mem.eql(u8, argument.named.bind.left.items[0].name.text, real.simple.text)){
+								try vast.ensure_path(argument, candidate, err);
+								continue :outer;
+							}
+						}
+					}
 					if (compare_arg(candidate, real)){
 						continue;
 					}
@@ -668,11 +688,16 @@ const VAST = struct {
 					}
 					err.append(set_error(vast.mem, 0, "Unable to find declaration for right argument constraint\n", .{}))
 						catch unreachable;
+					return RuntimeError.UnknownPredicate;
 				}
 				left_node.implications.append(rnode)
 					catch unreachable;
 			}
+			return;
 		}
+		err.append(set_error(vast.mem, 0, "Unable to find instantiation for right node\n", .{}))
+			catch unreachable;
+		return RuntimeError.UnknownPredicate;
 	}
 
 	pub fn find_arg_node(vast: *VAST, arg: Arg) ?Buffer(*VastNode) {
@@ -680,7 +705,7 @@ const VAST = struct {
 		switch (arg){
 			.named => {
 				if (arg.named == .bind){
-					for (arg.named.bind.left.items) |alt| {
+					for (arg.named.bind.right.items) |alt| {
 						if (vast.find(alt)) |node| {
 							buffer.append(node)
 								catch unreachable;
@@ -688,6 +713,7 @@ const VAST = struct {
 						}
 						return null;
 					}
+					return buffer;
 				}
 				return null;
 			},
@@ -755,6 +781,9 @@ const VAST = struct {
 };
 
 pub fn dfs_path(left: *VastNode, right: *VastNode, visited: *std.AutoHashMap(*VastNode, bool)) bool {
+	if (left == right){
+		return true;
+	}
 	visited.put(left, true)
 		catch unreachable;
 	for (left.implications.items) |node| {
