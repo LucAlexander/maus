@@ -281,11 +281,13 @@ pub fn parse_program(mem: *const std.mem.Allocator, tokens: []Token, err: *Buffe
 		const t = tokens[i];
 		if (t.tag == .UNBIND){
 			program.append(parse_unbind(mem, &i, tokens, err, .SEMI) catch {
+				i += 1;
 				continue;
 			}) catch unreachable;
 		}
 		else {
 			program.append(parse_bind(mem, &i, tokens, err, .SEMI) catch {
+				i += 1;
 				continue;
 			}) catch unreachable;
 		}
@@ -330,7 +332,7 @@ pub fn parse_unbind(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err
 pub fn parse_bind(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *Buffer(Error), end_token: TOKEN) ParseError!Equation {
 	const left = try parse_side(mem, i, tokens, err, .EQ);
 	const save = i.*;
-	const right = parse_side(mem, i, tokens, err, .SEMI) catch {
+	const right = parse_side(mem, i, tokens, err, end_token) catch {
 		i.* = save;
 		const sub = try parse_subprogram(mem, i, tokens, err);
 		const right = try parse_side(mem, i, tokens, err, end_token);
@@ -384,6 +386,7 @@ pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *
 		const t = tokens[i.*];
 		if (t.tag == .OPEN){
 			const save = i.*;
+			i.* += 1;
 			const bind = parse_bind(mem, i, tokens, err, .CLOSE) catch {
 				i.* = save;
 				const side = try parse_side(mem, i, tokens, err, .CLOSE);
