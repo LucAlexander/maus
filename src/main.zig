@@ -49,7 +49,9 @@ pub fn main() !void {
 		}
 		return;
 	}
+	std.debug.print("Preliminary vast after link:\n", .{});
 	vast.show();
+
 }
 
 const TOKEN = enum {
@@ -276,11 +278,24 @@ const Alt = struct {
 	args: Buffer(Arg)
 };
 
+const AppliedAlt = struct {
+	name: Token,
+	args: Buffer(AppliedArg)
+};
+
 const Arg = union(enum){
 	named: Equation,
 	literal: Token,
 	unnamed: Side,
 	simple: Token
+};
+
+const AppliedArg = struct{
+	arg: Arg,
+	val: union(enum) {
+		literal: []u8,
+		content: AppliedAlt
+	}
 };
 
 pub fn parse_program(mem: *const std.mem.Allocator, tokens: []Token, err: *Buffer(Error)) Program {
@@ -500,7 +515,8 @@ pub fn show_arg(arg: Arg) void {
 }
 
 const RuntimeError = error {
-	UnknownPredicate
+	UnknownPredicate,
+	NoPath
 };
 
 const VAST = struct {
@@ -603,6 +619,7 @@ const VAST = struct {
 			const save = args.items.len;
 			args.appendSlice(newargs.items)
 				catch unreachable;
+			//NOTE this needs to be runtime computed on evaluation
 			// for (program.items) |equation| {
 				// if (equation == .bind) {
 					// for (equation.bind.left.items) |subalt| {
@@ -764,10 +781,15 @@ const VAST = struct {
 						}
 					}
 				}
+				err.append(set_error(vast.mem, 0, "Unable to prove constraint, no path found\n", .{}))
+					catch unreachable;
+				return RuntimeError.NoPath;
 			}
+			err.append(set_error(vast.mem, 0, "Unable to prove constraint, right hand type undefined\n", .{}))
+				catch unreachable;
+			return RuntimeError.UnknownPredicate;
 		}
-		err.append(set_error(vast.mem, 0, "Unable to prove constraint\n", .{}))
-			catch unreachable;
+		//NOTE generic left hand side, needs to be checked on application
 	}
 
 	pub fn show(vast: *VAST) void {
@@ -775,6 +797,125 @@ const VAST = struct {
 		while (it.next()) |nodes| {
 			for (nodes.value_ptr.*.items) |node| {
 				node.show();
+			}
+		}
+	}
+
+	pub fn plugin(vast: *VAST, text: []u8) RuntimeError!void {
+		var i: u64 = 0;
+		while (i < text.len){
+			var it = vast.nodes.iterator();
+			while (it.next()) |node_buffer| {
+				for (node_buffer.items) |node| {
+					_ = try vast.apply_node(node, text, &i);
+				}
+			}
+		}
+	}
+
+	pub fn apply_node(vast: *VAST, node: *VastNode, text: []u8, i: *u64) RuntimeError!AppliedArg{
+		if (vast.apply_alt(node.alt, text, i)) |applied| {
+			for (node.implications.items) |right_node| {
+				//TODO compute the generation of each right node
+					//NOTE compute subrules
+					//NOTE apply generics
+					//NOTE check applied generic based constraints 
+			}
+			return applied;
+		}
+	}
+
+	pub fn apply_alt(vast: *VAST, alt: Alt, text: []u8, i: *u64) ?AppliedAlt {
+		var applied = AppliedAlt{
+			.name=alt.name,
+			.args=Buffer(Arg).init(mem.*)
+		};
+		for (alt.args.items) |arg| {
+			if (vast.apply_arg(arg, text, i)) |a| {
+				applied.args.append(a)
+					catch unreachable;
+				continue;
+			}
+			return null;
+		}
+		return applied;
+	}
+
+	pub fn apply_arg(vast: *VAST, arg: Arg, text: []u8, i: *u64) ?AppliedArg {
+		//TODO what if the argument type is generic
+		switch (arg){
+			.named => {
+				std.debug.assert(arg.named == .bind);
+				const save = i.*;
+				for (arg.named.right.items) |alt| {
+					if (vast.find(alt)) |node| {
+						const success = vast.apply_node(node, text, i) catch {
+							i.* = save;
+							continue;
+						}
+						return AppliedArg{
+							.arg=arg,
+							.val = .{
+								.content=success
+							}
+						};
+					}
+					else{
+						//TODO generic
+					}
+				}
+				return null;
+			},
+			.literal => {
+				if (std.mem.eql(u8, text[i.*..i.*+arg.literal.text.len, arg.literal.text)){
+					return AppliedArg{
+						.arg=arg,
+						.val = .{
+							.literal=arg.literal.text
+						}
+					};
+				}
+			},
+			.unnamed => {
+				const save = i.*;
+				for (arg.unnamed.items)|alt| {
+					if (vast.find(alt)) |node| {
+						const success = vast.apply_node(node, text, i) catch {
+							i.* = save;
+							continue;
+						};
+						return AppliedArg {
+							.arg=arg,
+							.val=.{
+								.content=success
+							}
+						};
+					}
+					else{
+						//TODO generic
+					}
+				}
+				return null;
+			},
+			.simple => {
+				if (vast.nodes.get(arg.simple))|buffer| {
+					const save = i.*;
+					for (buffer.items) |node| {
+						if (vast.apply_alt(node.alt, text, i)) |success| {
+							return AppliedArg{
+								.arg=arg,
+								.val=.{
+									.content=success
+								}
+							};
+						}
+						i = save;
+					}
+				}
+				else {
+					//TODO generic
+				}
+				return null;
 			}
 		}
 	}
