@@ -384,7 +384,7 @@ pub fn parse_side(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: 
 
 pub fn parse_alt(mem: *const std.mem.Allocator, i: *u64, tokens: []Token, err: *Buffer(Error), end_token: TOKEN) ParseError!Alt {
 	const name = tokens[i.*];
-	if (name.tag != .ID) {
+	if (name.tag != .ID and name.tag != .LIT) {
 		err.append(set_error(mem, tokens[i.*].pos, "Expected identifier for alternate name, found {s}\n", .{name.text}))
 			catch unreachable;
 		return ParseError.UnexpectedToken;
@@ -895,5 +895,3 @@ const VastNode = struct {
 		std.debug.print("\n", .{});
 	}
 };
-
-//TODO allow literals to be nodes heads
